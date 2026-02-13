@@ -15,6 +15,11 @@ Analyze async-profiler JFR recordings with `ap-query`.
 Run `ap-query --help` for full command and flag reference.
 If not in PATH, ask the user for its location.
 
+Always prefer JFR format over collapsed text. JFR preserves event types (cpu/wall/alloc/lock),
+line numbers, and thread info — collapsed text loses event separation and may lack line data.
+If the user has collapsed text, `ap-query` accepts it, but suggest re-profiling with
+`-o jfr` if they need deeper analysis.
+
 ## Workflow
 
 1. **Triage**: `ap-query info profile.jfr` — events, top threads, top 10 hot methods.
