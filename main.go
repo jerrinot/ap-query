@@ -58,6 +58,7 @@ Commands:
   events    List event types in a JFR file (JFR only).
   version   Print version and check for updates.
   update    Download and install the latest release.
+  init      Install agent skill for JFR profiling analysis.
 
 Global flags:
   --event TYPE, -e TYPE   Event type: cpu (default), wall, alloc, lock. JFR only.
@@ -113,7 +114,7 @@ func parseFlags(args []string) flags {
 			key := strings.TrimLeft(a, "-")
 			// Known boolean flags
 			switch key {
-			case "fqn", "include-callers":
+			case "fqn", "include-callers", "force", "project", "claude", "codex", "stdout":
 				f.bools[key] = true
 				i++
 				continue
@@ -203,6 +204,18 @@ func main() {
 		return
 	}
 	f := parseFlags(os.Args[2:])
+
+	if cmd == "init" {
+		cmdInit(initOpts{
+			asprof:  f.str("asprof"),
+			force:   f.boolean("force"),
+			project: f.boolean("project"),
+			claude:  f.boolean("claude"),
+			codex:   f.boolean("codex"),
+			stdout:  f.boolean("stdout"),
+		})
+		return
+	}
 
 	eventType := f.str("event", "e")
 	if eventType == "" {

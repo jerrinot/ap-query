@@ -27,37 +27,38 @@ ap-query <command> [flags] <file>
 ap-query --help   # full reference
 ```
 
-## Agent integration (Claude Code)
+## Agent integration
 
-Claude Code supports **skills** — markdown files that teach the agent domain
-workflows. This repo includes a [`jfr`](.claude/skills/jfr/SKILL.md) skill that
-gives Claude Code the ability to autonomously analyze JFR profiles: triage hot
-methods, drill into call trees, compare before/after, and interpret the results.
+`ap-query init` installs a **skill** — a markdown file that teaches AI coding
+agents (Claude Code, Codex) how to autonomously profile JVMs and analyze JFR
+recordings: triage hot methods, drill into call trees, compare before/after,
+and interpret the results.
 
-### Per-project install (recommended)
+The `init` command auto-detects `asprof` and `ap-query` paths and embeds them
+into the skill file — no manual path configuration needed. It also auto-detects
+which agents are installed (`~/.claude`, `~/.agents`) and writes to all of them.
 
-Copy the skill into your project so every team member gets it automatically:
-
-```bash
-mkdir -p .claude/skills/jfr
-cp /path/to/ap-query/.claude/skills/jfr/SKILL.md .claude/skills/jfr/SKILL.md
-```
-
-Commit `.claude/skills/` to your repo. Claude Code picks it up on next session —
-no extra configuration needed.
-
-### Global install (all projects)
-
-To make the skill available across all your projects:
+### Install
 
 ```bash
-mkdir -p ~/.claude/skills/jfr
-cp /path/to/ap-query/.claude/skills/jfr/SKILL.md ~/.claude/skills/jfr/SKILL.md
+ap-query init              # global — auto-detects installed agents
+ap-query init --project    # project-local — auto-detects installed agents
 ```
+
+### Options
+
+| Flag | Description |
+|------|-------------|
+| `--asprof PATH` | Explicit path to `asprof` (skips auto-detection and interactive prompt) |
+| `--project` | Install into the current directory instead of home |
+| `--force` | Overwrite existing skill files |
+| `--claude` | Install only for Claude Code (`.claude/skills/jfr/`) |
+| `--codex` | Install only for Codex (`.agents/skills/jfr/`) |
+| `--stdout` | Dump rendered skill to stdout (for piping into custom agents) |
 
 ### How it works
 
-When you ask Claude Code about JVM performance (e.g. "profile this JFR file",
+When you ask your agent about JVM performance (e.g. "profile this JFR file",
 "why is this endpoint slow"), the skill's keyword triggers activate it
 automatically. The skill teaches the agent the `ap-query` workflow and
 interpretation heuristics — you don't need to explain the tool or its flags.

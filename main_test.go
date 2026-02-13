@@ -961,3 +961,79 @@ func TestReplaceBinary(t *testing.T) {
 		t.Errorf("permissions = %o, want 755", info.Mode().Perm())
 	}
 }
+
+// ---------------------------------------------------------------------------
+// TestAsprofSearchDirs
+// ---------------------------------------------------------------------------
+
+func TestAsprofSearchDirs(t *testing.T) {
+	dirs := asprofSearchDirs()
+	if len(dirs) == 0 {
+		t.Fatal("asprofSearchDirs returned empty list")
+	}
+
+	// Should include known directories
+	found := false
+	for _, d := range dirs {
+		if d == "/opt/async-profiler/bin" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected /opt/async-profiler/bin in search dirs")
+	}
+
+	found = false
+	for _, d := range dirs {
+		if d == "/usr/local/bin" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected /usr/local/bin in search dirs")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestSkillTemplateRendering
+// ---------------------------------------------------------------------------
+
+func TestSkillTemplateRendering(t *testing.T) {
+	content := strings.ReplaceAll(skillTemplate, "{{AP_QUERY_PATH}}", "/usr/local/bin/ap-query")
+	content = strings.ReplaceAll(content, "{{ASPROF_PATH}}", "/opt/async-profiler/bin/asprof")
+
+	// Placeholders should be gone
+	if strings.Contains(content, "{{AP_QUERY_PATH}}") {
+		t.Error("{{AP_QUERY_PATH}} placeholder still present")
+	}
+	if strings.Contains(content, "{{ASPROF_PATH}}") {
+		t.Error("{{ASPROF_PATH}} placeholder still present")
+	}
+
+	// Frontmatter should be intact
+	if !strings.HasPrefix(content, "---\n") {
+		t.Error("expected frontmatter start")
+	}
+	if !strings.Contains(content, "name: jfr") {
+		t.Error("expected 'name: jfr' in frontmatter")
+	}
+
+	// Paths should be embedded
+	if !strings.Contains(content, "/usr/local/bin/ap-query") {
+		t.Error("expected ap-query path in rendered content")
+	}
+	if !strings.Contains(content, "/opt/async-profiler/bin/asprof") {
+		t.Error("expected asprof path in rendered content")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestFindAsprof
+// ---------------------------------------------------------------------------
+
+func TestFindAsprof(t *testing.T) {
+	// Smoke test: should not panic regardless of whether asprof is installed
+	_ = findAsprof()
+}
