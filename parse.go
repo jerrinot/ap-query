@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -246,11 +245,53 @@ func (g *gzipReadCloser) Close() error {
 	return g.f.Close()
 }
 
-var (
-	collapsedLineRe  = regexp.MustCompile(`^(.+)\s+(\d+)$`)
-	threadFrameRe    = regexp.MustCompile(`^\[(.+?)(?:\s+tid=\d+)?\]$`)
-	annotatedFrameRe = regexp.MustCompile(`^(.+?):(\d+)(?:_\[[^\]]*\])?$`)
-)
+// splitCollapsedLine splits "frames count\n" into the frames string and count.
+// Returns ("", 0) if the line is malformed.
+func splitCollapsedLine(line string) (string, int) {
+	i := strings.LastIndexByte(line, ' ')
+	if i < 1 {
+		return "", 0
+	}
+	count, err := strconv.Atoi(line[i+1:])
+	if err != nil || count <= 0 {
+		return "", 0
+	}
+	return line[:i], count
+}
+
+// parseThreadFrame checks if frame is "[name]" or "[name tid=N]" and returns
+// the thread name, or "" if not a thread marker.
+func parseThreadFrame(frame string) string {
+	if len(frame) < 3 || frame[0] != '[' || frame[len(frame)-1] != ']' {
+		return ""
+	}
+	inner := frame[1 : len(frame)-1]
+	// Strip optional " tid=N" suffix.
+	if idx := strings.Index(inner, " tid="); idx >= 0 {
+		inner = inner[:idx]
+	}
+	return inner
+}
+
+// parseAnnotatedFrame strips jfrconv annotations from "Method:line_[type]".
+// Returns (method, lineNumber) or (frame, 0) if not annotated.
+func parseAnnotatedFrame(frame string) (string, uint32) {
+	// Look for the _[...] suffix first.
+	base := frame
+	if idx := strings.LastIndex(frame, "_["); idx >= 0 && frame[len(frame)-1] == ']' {
+		base = frame[:idx]
+	}
+	// Now base should be "Method:line" if annotated.
+	colon := strings.LastIndexByte(base, ':')
+	if colon < 1 {
+		return frame, 0
+	}
+	ln, err := strconv.ParseUint(base[colon+1:], 10, 32)
+	if err != nil {
+		return frame, 0
+	}
+	return base[:colon], uint32(ln)
+}
 
 func parseCollapsed(r io.Reader) (*stackFile, error) {
 	sf := &stackFile{}
@@ -261,13 +302,8 @@ func parseCollapsed(r io.Reader) (*stackFile, error) {
 		if line == "" {
 			continue
 		}
-		m := collapsedLineRe.FindStringSubmatch(line)
-		if m == nil {
-			continue
-		}
-		framesStr := m[1]
-		count, _ := strconv.Atoi(m[2])
-		if count <= 0 {
+		framesStr, count := splitCollapsedLine(line)
+		if count == 0 {
 			continue
 		}
 
@@ -275,10 +311,9 @@ func parseCollapsed(r io.Reader) (*stackFile, error) {
 		thread := ""
 		startIdx := 0
 
-		// Check if first frame is a thread marker.
 		if len(parts) > 0 {
-			if tm := threadFrameRe.FindStringSubmatch(parts[0]); tm != nil {
-				thread = tm[1]
+			if t := parseThreadFrame(parts[0]); t != "" {
+				thread = t
 				startIdx = 1
 			}
 		}
@@ -287,14 +322,9 @@ func parseCollapsed(r io.Reader) (*stackFile, error) {
 		lines := make([]uint32, 0, len(parts)-startIdx)
 
 		for _, part := range parts[startIdx:] {
-			if am := annotatedFrameRe.FindStringSubmatch(part); am != nil {
-				frames = append(frames, am[1])
-				ln, _ := strconv.ParseUint(am[2], 10, 32)
-				lines = append(lines, uint32(ln))
-			} else {
-				frames = append(frames, part)
-				lines = append(lines, 0)
-			}
+			name, ln := parseAnnotatedFrame(part)
+			frames = append(frames, name)
+			lines = append(lines, ln)
 		}
 
 		if len(frames) == 0 {
