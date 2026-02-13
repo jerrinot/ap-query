@@ -27,11 +27,40 @@ ap-query <command> [flags] <file>
 ap-query --help   # full reference
 ```
 
-## Agent integration
+## Agent integration (Claude Code)
 
-Drop the [`jfr`](.claude/skills/jfr/SKILL.md) skill into your project's
-`.claude/skills/` to give Claude Code profiling capabilities. The skill teaches
-the agent the analysis workflow and interpretation heuristics.
+Claude Code supports **skills** — markdown files that teach the agent domain
+workflows. This repo includes a [`jfr`](.claude/skills/jfr/SKILL.md) skill that
+gives Claude Code the ability to autonomously analyze JFR profiles: triage hot
+methods, drill into call trees, compare before/after, and interpret the results.
+
+### Per-project install (recommended)
+
+Copy the skill into your project so every team member gets it automatically:
+
+```bash
+mkdir -p .claude/skills/jfr
+cp /path/to/ap-query/.claude/skills/jfr/SKILL.md .claude/skills/jfr/SKILL.md
+```
+
+Commit `.claude/skills/` to your repo. Claude Code picks it up on next session —
+no extra configuration needed.
+
+### Global install (all projects)
+
+To make the skill available across all your projects:
+
+```bash
+mkdir -p ~/.claude/skills/jfr
+cp /path/to/ap-query/.claude/skills/jfr/SKILL.md ~/.claude/skills/jfr/SKILL.md
+```
+
+### How it works
+
+When you ask Claude Code about JVM performance (e.g. "profile this JFR file",
+"why is this endpoint slow"), the skill's keyword triggers activate it
+automatically. The skill teaches the agent the `ap-query` workflow and
+interpretation heuristics — you don't need to explain the tool or its flags.
 
 ## Release
 

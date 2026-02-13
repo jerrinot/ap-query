@@ -323,9 +323,9 @@ func TestCmdInfo(t *testing.T) {
 		{frames: []string{"C.c"}, lines: []uint32{0}, count: 5, thread: "worker"},
 	})
 
-	// cmdInfo calls discoverEvents which needs a real file, but we can test
-	// the threads and hot methods sections by passing a non-existent path
-	// (discoverEvents will fail silently due to the err check).
+	// cmdInfo calls discoverEvents which needs a real file; passing a
+	// non-existent path triggers a warning on stderr but still lets us
+	// test the threads and hot methods sections.
 	out := captureOutput(func() {
 		cmdInfo("/nonexistent.jfr", sf, "cpu", true)
 	})
@@ -422,10 +422,6 @@ func TestStackLinesParallel(t *testing.T) {
 		t.Errorf("lines[2] = %d, want 42", s.lines[2])
 	}
 }
-
-// ---------------------------------------------------------------------------
-// TestFilterByThread
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // TestParseCollapsed*

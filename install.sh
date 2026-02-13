@@ -31,3 +31,8 @@ mkdir -p "$INSTALL_DIR"
 install -m 755 "$TMP/ap-query" "$INSTALL_DIR/ap-query"
 
 echo "installed ap-query to ${INSTALL_DIR}/ap-query"
+
+case ":$PATH:" in
+  *":${INSTALL_DIR}:"*) ;;
+  *) echo "NOTE: ${INSTALL_DIR} is not in your PATH. Add it with: export PATH=\"${INSTALL_DIR}:\$PATH\"" ;;
+esac
