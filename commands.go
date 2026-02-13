@@ -550,9 +550,17 @@ func cmdDiff(before, after *stackFile, minDelta float64, top int, fqn bool) {
 // lines
 // ---------------------------------------------------------------------------
 
-func cmdLines(sf *stackFile, method string, top int, fqn bool) {
+type lineEntry struct {
+	name    string
+	line    uint32
+	samples int
+}
+
+// computeLines returns the per-source-line sample counts for the given method.
+// hasMethod is true when frames match but no line info is available.
+func computeLines(sf *stackFile, method string, top int, fqn bool) (result []lineEntry, hasMethod bool) {
 	if sf.totalSamples == 0 {
-		return
+		return nil, false
 	}
 
 	type lineKey struct {
@@ -578,18 +586,28 @@ func cmdLines(sf *stackFile, method string, top int, fqn bool) {
 	}
 
 	if !foundAny {
-		hasMethod := false
 		for i := range sf.stacks {
 			for _, fr := range sf.stacks[i].frames {
 				if matchesMethod(fr, method) {
-					hasMethod = true
-					break
+					return nil, true
 				}
 			}
-			if hasMethod {
-				break
-			}
 		}
+		return nil, false
+	}
+
+	var ranked []lineEntry
+	for k, c := range lineCounts {
+		ranked = append(ranked, lineEntry{k.name, k.line, c})
+	}
+	sort.Slice(ranked, func(i, j int) bool { return ranked[i].samples > ranked[j].samples })
+	ranked = ranked[:truncate(len(ranked), top)]
+	return ranked, true
+}
+
+func cmdLines(sf *stackFile, method string, top int, fqn bool) {
+	ranked, hasMethod := computeLines(sf, method, top, fqn)
+	if ranked == nil {
 		if hasMethod {
 			fmt.Fprintf(os.Stderr, "error: no line info for frames matching '%s'\n", method)
 			os.Exit(1)
@@ -597,18 +615,6 @@ func cmdLines(sf *stackFile, method string, top int, fqn bool) {
 		fmt.Printf("no frames matching '%s'\n", method)
 		return
 	}
-
-	type lineEntry struct {
-		name    string
-		line    uint32
-		samples int
-	}
-	var ranked []lineEntry
-	for k, c := range lineCounts {
-		ranked = append(ranked, lineEntry{k.name, k.line, c})
-	}
-	sort.Slice(ranked, func(i, j int) bool { return ranked[i].samples > ranked[j].samples })
-	ranked = ranked[:truncate(len(ranked), top)]
 
 	fmt.Printf("%-40s %9s %7s\n", "SOURCE:LINE", "SAMPLES", "PCT")
 	for _, e := range ranked {
@@ -622,7 +628,7 @@ func cmdLines(sf *stackFile, method string, top int, fqn bool) {
 // info
 // ---------------------------------------------------------------------------
 
-func cmdInfo(path string, sf *stackFile, eventType string, isJFR bool) {
+func cmdInfo(path string, sf *stackFile, eventType string, isJFR bool, expand, topThreads, topMethods int) {
 	// === EVENTS === (JFR only)
 	if isJFR {
 		counts, err := discoverEvents(path)
@@ -649,12 +655,12 @@ func cmdInfo(path string, sf *stackFile, eventType string, isJFR bool) {
 	// === THREADS ===
 	ranked, _, hasThread := computeThreads(sf)
 	if hasThread {
-		fmt.Println("=== THREADS (top 5) ===")
-		top5 := ranked
-		if len(top5) > 5 {
-			top5 = top5[:5]
+		shown := ranked
+		if topThreads > 0 && topThreads < len(shown) {
+			shown = shown[:topThreads]
 		}
-		for _, e := range top5 {
+		fmt.Printf("=== THREADS (top %d) ===\n", len(shown))
+		for _, e := range shown {
 			pct := 100.0 * float64(e.samples) / float64(sf.totalSamples)
 			fmt.Printf("%-30s %9d %6.1f%%\n", e.name, e.samples, pct)
 		}
@@ -664,13 +670,13 @@ func cmdInfo(path string, sf *stackFile, eventType string, isJFR bool) {
 	// === HOT METHODS ===
 	hot := computeHot(sf, false)
 	if len(hot) > 0 {
-		fmt.Println("=== HOT METHODS (top 10) ===")
-		top10 := hot
-		if len(top10) > 10 {
-			top10 = top10[:10]
+		shown := hot
+		if topMethods > 0 && topMethods < len(shown) {
+			shown = shown[:topMethods]
 		}
+		fmt.Printf("=== HOT METHODS (top %d) ===\n", len(shown))
 		fmt.Printf("%-50s %7s %7s %9s\n", "METHOD", "SELF%", "TOTAL%", "SAMPLES")
-		for _, e := range top10 {
+		for _, e := range shown {
 			sp := 100.0 * float64(e.selfCount) / float64(sf.totalSamples)
 			tp := 100.0 * float64(e.totalCount) / float64(sf.totalSamples)
 			fmt.Printf("%-50s %6.1f%% %6.1f%% %9d\n", e.name, sp, tp, e.selfCount)
@@ -678,4 +684,31 @@ func cmdInfo(path string, sf *stackFile, eventType string, isJFR bool) {
 	}
 
 	fmt.Printf("\nTotal samples: %d\n", sf.totalSamples)
+
+	// === DRILL-DOWN ===
+	if expand > 0 && len(hot) > 0 {
+		drillDown := hot
+		if expand < len(drillDown) {
+			drillDown = drillDown[:expand]
+		}
+		for _, h := range drillDown {
+			sp := 100.0 * float64(h.selfCount) / float64(sf.totalSamples)
+			fmt.Printf("\n=== DRILL-DOWN: %s (self=%.1f%%) ===\n", h.name, sp)
+
+			fmt.Println("--- tree (callees) ---")
+			cmdTree(sf, h.name, 3, 1.0)
+
+			fmt.Println("--- callers ---")
+			cmdCallers(sf, h.name, 3, 1.0)
+
+			lines, _ := computeLines(sf, h.name, 5, false)
+			if len(lines) > 0 {
+				fmt.Println("--- lines ---")
+				for _, le := range lines {
+					pct := 100.0 * float64(le.samples) / float64(sf.totalSamples)
+					fmt.Printf("%s:%-8d %8d %6.1f%%\n", le.name, le.line, le.samples, pct)
+				}
+			}
+		}
+	}
 }

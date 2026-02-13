@@ -33,7 +33,7 @@ Input auto-detection:
   -                →  collapsed text from stdin
 
 Commands:
-  info      One-shot triage: events (JFR only), top threads, top hot methods.
+  info      One-shot triage: events, threads, hot methods, and drill-down.
   hot       Rank methods by self-time (leaf cost).
   tree      Call tree descending from a method (-m required).
   callers   Callers ascending to a method (-m required).
@@ -56,6 +56,9 @@ Command-specific flags:
   --min-delta F                Hide diff entries below this %% change (default: 0.5).
   --fqn                        Show fully-qualified names instead of Class.method.
   --assert-below F             Exit 1 if top method self%% >= F (for CI gates).
+  --expand N                   Auto-expand top N hot methods in info (default: 3, 0=off).
+  --top-threads N              Threads shown in info (default: 10, 0=all).
+  --top-methods N              Hot methods shown in info (default: 20, 0=all).
   --include-callers            Include caller frames in filter output.
 
 Examples:
@@ -300,7 +303,10 @@ func main() {
 		cmdLines(sf, method, top, fqn)
 
 	case "info":
-		cmdInfo(path, sf, eventType, isJFR)
+		expand := f.intVal([]string{"expand"}, 3)
+		topThreads := f.intVal([]string{"top-threads"}, 10)
+		topMethods := f.intVal([]string{"top-methods"}, 20)
+		cmdInfo(path, sf, eventType, isJFR, expand, topThreads, topMethods)
 
 	default:
 		usage()

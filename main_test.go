@@ -327,20 +327,140 @@ func TestCmdInfo(t *testing.T) {
 	// non-existent path triggers a warning on stderr but still lets us
 	// test the threads and hot methods sections.
 	out := captureOutput(func() {
-		cmdInfo("/nonexistent.jfr", sf, "cpu", true)
+		cmdInfo("/nonexistent.jfr", sf, "cpu", true, 0, 5, 10)
 	})
 
-	if !strings.Contains(out, "=== THREADS (top 5) ===") {
+	if !strings.Contains(out, "=== THREADS (top") {
 		t.Error("expected THREADS section")
 	}
 	if !strings.Contains(out, "main") {
 		t.Error("expected 'main' thread")
 	}
-	if !strings.Contains(out, "=== HOT METHODS (top 10) ===") {
+	if !strings.Contains(out, "=== HOT METHODS (top") {
 		t.Error("expected HOT METHODS section")
 	}
 	if !strings.Contains(out, "Total samples: 15") {
 		t.Errorf("expected 'Total samples: 15', got %q", out)
+	}
+}
+
+func TestCmdInfoExpand(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "B.b", "C.c"}, lines: []uint32{10, 20, 30}, count: 10, thread: "main"},
+		{frames: []string{"A.a", "B.b"}, lines: []uint32{10, 20}, count: 5, thread: "main"},
+		{frames: []string{"A.a", "D.d"}, lines: []uint32{10, 40}, count: 3, thread: "worker"},
+	})
+
+	out := captureOutput(func() {
+		cmdInfo("fake.txt", sf, "cpu", false, 2, 10, 20)
+	})
+
+	// Should have drill-down sections for top 2 methods (C.c and B.b)
+	if !strings.Contains(out, "=== DRILL-DOWN: C.c") {
+		t.Error("expected DRILL-DOWN for C.c")
+	}
+	if !strings.Contains(out, "=== DRILL-DOWN: B.b") {
+		t.Error("expected DRILL-DOWN for B.b")
+	}
+	if strings.Contains(out, "=== DRILL-DOWN: D.d") {
+		t.Error("should not expand D.d (only top 2)")
+	}
+	if !strings.Contains(out, "--- tree (callees) ---") {
+		t.Error("expected tree section")
+	}
+	if !strings.Contains(out, "--- callers ---") {
+		t.Error("expected callers section")
+	}
+	if !strings.Contains(out, "--- lines ---") {
+		t.Error("expected lines section")
+	}
+}
+
+func TestCmdInfoExpandZero(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "B.b"}, lines: []uint32{10, 20}, count: 10, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdInfo("fake.txt", sf, "cpu", false, 0, 10, 20)
+	})
+
+	if strings.Contains(out, "DRILL-DOWN") {
+		t.Error("expected no DRILL-DOWN when expand=0")
+	}
+}
+
+func TestCmdInfoExpandNoLineInfo(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "B.b"}, lines: []uint32{0, 0}, count: 10, thread: "main"},
+		{frames: []string{"C.c"}, lines: []uint32{0}, count: 5, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdInfo("fake.txt", sf, "cpu", false, 2, 10, 20)
+	})
+
+	// Drill-down should appear but without lines section
+	if !strings.Contains(out, "=== DRILL-DOWN:") {
+		t.Error("expected DRILL-DOWN section")
+	}
+	if strings.Contains(out, "--- lines ---") {
+		t.Error("expected no lines section when no line info")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestComputeLines
+// ---------------------------------------------------------------------------
+
+func TestComputeLines(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "com.example.B.process"}, lines: []uint32{10, 42}, count: 5, thread: "main"},
+		{frames: []string{"A.a", "com.example.B.process"}, lines: []uint32{10, 99}, count: 3, thread: "main"},
+		{frames: []string{"A.a", "com.example.B.process"}, lines: []uint32{10, 42}, count: 2, thread: "worker"},
+	})
+
+	result, hasMethod := computeLines(sf, "B.process", 0, false)
+	if !hasMethod {
+		t.Fatal("expected hasMethod=true")
+	}
+	if len(result) != 2 {
+		t.Fatalf("expected 2 line entries, got %d", len(result))
+	}
+	// Line 42 should be first with 7 samples
+	if result[0].line != 42 || result[0].samples != 7 {
+		t.Errorf("expected line 42 with 7 samples first, got line %d with %d", result[0].line, result[0].samples)
+	}
+	if result[1].line != 99 || result[1].samples != 3 {
+		t.Errorf("expected line 99 with 3 samples second, got line %d with %d", result[1].line, result[1].samples)
+	}
+}
+
+func TestComputeLinesNoLineInfo(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "B.b"}, lines: []uint32{0, 0}, count: 10, thread: "main"},
+	})
+
+	result, hasMethod := computeLines(sf, "B.b", 0, false)
+	if result != nil {
+		t.Errorf("expected nil result, got %v", result)
+	}
+	if !hasMethod {
+		t.Error("expected hasMethod=true (method exists but no line info)")
+	}
+}
+
+func TestComputeLinesNoMatch(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "B.b"}, lines: []uint32{10, 20}, count: 5, thread: "main"},
+	})
+
+	result, hasMethod := computeLines(sf, "Nonexistent", 0, false)
+	if result != nil {
+		t.Errorf("expected nil result, got %v", result)
+	}
+	if hasMethod {
+		t.Error("expected hasMethod=false")
 	}
 }
 
