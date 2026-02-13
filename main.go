@@ -178,6 +178,17 @@ func main() {
 	}
 	f := parseFlags(os.Args[2:])
 
+	eventType := f.str("event", "e")
+	if eventType == "" {
+		eventType = "cpu"
+	}
+	switch eventType {
+	case "cpu", "wall", "alloc", "lock":
+	default:
+		fmt.Fprintf(os.Stderr, "error: unknown event type %q (valid: cpu, wall, alloc, lock)\n", eventType)
+		os.Exit(2)
+	}
+
 	if cmd == "events" {
 		if len(f.args) < 1 {
 			usage()
@@ -188,17 +199,6 @@ func main() {
 		}
 		cmdEvents(f.args[0])
 		return
-	}
-
-	eventType := f.str("event", "e")
-	if eventType == "" {
-		eventType = "cpu"
-	}
-	switch eventType {
-	case "cpu", "wall", "alloc", "lock":
-	default:
-		fmt.Fprintf(os.Stderr, "error: unknown event type %q (valid: cpu, wall, alloc, lock)\n", eventType)
-		os.Exit(2)
 	}
 
 	// diff requires two positional args

@@ -18,4 +18,4 @@ jobs:
         run: |
           echo "A;B;C 10" | ./ap-query hot -
           echo "A;B;C 10" | ./ap-query info -
-          echo "A;B 10" | ./ap-query events - 2>&1 && exit 1 || true
+          ! echo "A;B 10" | ./ap-query events - 2>/dev/null

@@ -626,7 +626,9 @@ func cmdInfo(path string, sf *stackFile, eventType string, isJFR bool) {
 	// === EVENTS === (JFR only)
 	if isJFR {
 		counts, err := discoverEvents(path)
-		if err == nil && len(counts) > 0 {
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not read events: %v\n", err)
+		} else if len(counts) > 0 {
 			fmt.Println("=== EVENTS ===")
 			type evEntry struct {
 				name    string
