@@ -52,8 +52,8 @@ explicitly to use `ap-query`.
 
 ### Install Modes
 
-- Project-local (recommended): `ap-query init --project --codex` or `ap-query init --project --claude`
-- Global (home directory): `ap-query init --codex` or `ap-query init --claude`
+- Project-local: `ap-query init --project --codex` or `ap-query init --project --claude`
+- Global: `ap-query init --codex` or `ap-query init --claude`
 
 ### Input Types
 
