@@ -1,12 +1,21 @@
 package main
 
 import (
+	"archive/tar"
+	"archive/zip"
 	"bufio"
+	"bytes"
+	"compress/gzip"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"time"
 )
 
 const skillTemplate = `---
@@ -98,31 +107,21 @@ func cmdInit(opts initOpts) {
 		os.Exit(1)
 	}
 
-	// Find asprof: explicit flag > auto-detect > interactive prompt
+	// Find asprof: explicit flag > PATH/common dirs > ask user (path or download)
 	asprofPath := opts.asprof
 	if asprofPath != "" {
 		asprofPath = expandPath(asprofPath)
+		if _, err := os.Stat(asprofPath); err != nil {
+			fmt.Fprintf(os.Stderr, "error: asprof not found at %s\n", asprofPath)
+			os.Exit(1)
+		}
 	} else {
 		asprofPath = findAsprof()
-		if asprofPath == "" {
-			if opts.stdout {
-				fmt.Fprintln(os.Stderr, "error: asprof path is required (use --asprof PATH)")
-				os.Exit(1)
-			}
-			asprofPath = promptPath("asprof")
-			if asprofPath == "" {
-				fmt.Fprintln(os.Stderr, "error: asprof path is required (or use --asprof PATH)")
-				os.Exit(1)
-			}
-		} else {
+		if asprofPath != "" {
 			fmt.Fprintf(os.Stderr, "Found asprof: %s\n", asprofPath)
+		} else {
+			asprofPath = promptOrDownloadAsprof(opts.stdout)
 		}
-	}
-
-	// Verify asprof exists
-	if _, err := os.Stat(asprofPath); err != nil {
-		fmt.Fprintf(os.Stderr, "error: asprof not found at %s\n", asprofPath)
-		os.Exit(1)
 	}
 
 	// Render template
@@ -239,12 +238,14 @@ func findAsprof() string {
 func asprofSearchDirs() []string {
 	dirs := []string{
 		"/opt/async-profiler/bin",
+		"/opt/homebrew/bin",
 		"/usr/local/bin",
 	}
 
 	home, err := os.UserHomeDir()
 	if err == nil {
 		dirs = append(dirs,
+			filepath.Join(home, ".ap-query", "bin"),
 			filepath.Join(home, ".sdkman", "candidates", "java", "current", "bin"),
 			filepath.Join(home, ".local", "bin"),
 		)
@@ -252,17 +253,234 @@ func asprofSearchDirs() []string {
 	return dirs
 }
 
-func promptPath(name string) string {
-	fmt.Fprintf(os.Stderr, "Could not find %s. Enter the path to %s: ", name, name)
+// promptOrDownloadAsprof asks the user to provide a path or download automatically.
+// In non-interactive mode (stdout), it downloads directly.
+func promptOrDownloadAsprof(nonInteractive bool) string {
+	if nonInteractive {
+		// --stdout mode: no prompt, just download
+		fmt.Fprintln(os.Stderr, "asprof not found, downloading async-profiler...")
+		p, err := downloadAsprof()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			fmt.Fprintln(os.Stderr, "  install async-profiler manually and use --asprof PATH")
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "Installed asprof: %s\n", p)
+		return p
+	}
+
+	fmt.Fprintln(os.Stderr, "asprof not found.")
+	fmt.Fprintf(os.Stderr, "Enter path to asprof, or press Enter to download automatically: ")
 	scanner := bufio.NewScanner(os.Stdin)
-	if !scanner.Scan() {
-		return ""
+	if scanner.Scan() {
+		p := strings.TrimSpace(scanner.Text())
+		if p != "" {
+			p = expandPath(p)
+			if _, err := os.Stat(p); err != nil {
+				fmt.Fprintf(os.Stderr, "error: asprof not found at %s\n", p)
+				os.Exit(1)
+			}
+			return p
+		}
 	}
-	p := strings.TrimSpace(scanner.Text())
-	if p == "" {
-		return ""
+
+	// Empty input or EOF: download
+	fmt.Fprintln(os.Stderr, "Downloading async-profiler...")
+	result, err := downloadAsprof()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		fmt.Fprintln(os.Stderr, "  install async-profiler manually and use --asprof PATH")
+		os.Exit(1)
 	}
-	return expandPath(p)
+	fmt.Fprintf(os.Stderr, "Installed asprof: %s\n", result)
+	return result
+}
+
+// downloadAsprof fetches the latest async-profiler release and extracts it to ~/.ap-query/.
+// Returns the absolute path to the asprof binary.
+func downloadAsprof() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("cannot determine home directory: %v", err)
+	}
+
+	// Get latest release tag
+	tag, err := asprofLatestTag()
+	if err != nil {
+		return "", fmt.Errorf("cannot check latest async-profiler version: %v", err)
+	}
+	ver := strings.TrimPrefix(tag, "v")
+
+	// Build download URL
+	url, isTarGz := asprofDownloadURL(tag, ver)
+
+	// Download
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return "", fmt.Errorf("downloading %s: %v", url, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("downloading %s: HTTP %d", url, resp.StatusCode)
+	}
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("reading download: %v", err)
+	}
+
+	// Extract to ~/.ap-query/
+	installDir := filepath.Join(home, ".ap-query")
+	if isTarGz {
+		err = extractTarGz(data, installDir)
+	} else {
+		err = extractZip(data, installDir)
+	}
+	if err != nil {
+		return "", fmt.Errorf("extracting async-profiler: %v", err)
+	}
+
+	asprofPath := filepath.Join(installDir, "bin", "asprof")
+	if _, err := os.Stat(asprofPath); err != nil {
+		return "", fmt.Errorf("asprof binary not found after extraction")
+	}
+	return asprofPath, nil
+}
+
+func asprofLatestTag() (string, error) {
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get("https://api.github.com/repos/async-profiler/async-profiler/releases/latest")
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("GitHub API returned HTTP %d", resp.StatusCode)
+	}
+	var release struct {
+		TagName string `json:"tag_name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		return "", err
+	}
+	if release.TagName == "" {
+		return "", fmt.Errorf("empty tag in GitHub response")
+	}
+	return release.TagName, nil
+}
+
+// asprofDownloadURL returns the download URL and whether it's a tar.gz (vs zip).
+func asprofDownloadURL(tag, ver string) (string, bool) {
+	base := "https://github.com/async-profiler/async-profiler/releases/download/" + tag + "/"
+	if runtime.GOOS == "darwin" {
+		return base + "async-profiler-" + ver + "-macos.zip", false
+	}
+	arch := "x64"
+	if runtime.GOARCH == "arm64" {
+		arch = "arm64"
+	}
+	return base + "async-profiler-" + ver + "-linux-" + arch + ".tar.gz", true
+}
+
+// extractTarGz extracts a tar.gz archive into destDir, flattening the top-level directory.
+// e.g. async-profiler-4.3-linux-x64/bin/asprof → destDir/bin/asprof
+func extractTarGz(data []byte, destDir string) error {
+	gz, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	defer gz.Close()
+
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+
+		// Strip top-level directory
+		parts := strings.SplitN(hdr.Name, "/", 2)
+		if len(parts) < 2 || parts[1] == "" {
+			continue
+		}
+		rel := parts[1]
+
+		target := filepath.Join(destDir, rel)
+		if !strings.HasPrefix(target, filepath.Clean(destDir)+string(filepath.Separator)) {
+			continue // skip paths that escape destDir
+		}
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(target, 0755); err != nil {
+				return err
+			}
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+				return err
+			}
+			f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode))
+			if err != nil {
+				return err
+			}
+			if _, err := io.Copy(f, tr); err != nil {
+				f.Close()
+				return err
+			}
+			f.Close()
+		}
+	}
+	return nil
+}
+
+// extractZip extracts a zip archive into destDir, flattening the top-level directory.
+func extractZip(data []byte, destDir string) error {
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return err
+	}
+
+	for _, f := range zr.File {
+		// Strip top-level directory
+		parts := strings.SplitN(f.Name, "/", 2)
+		if len(parts) < 2 || parts[1] == "" {
+			continue
+		}
+		rel := parts[1]
+
+		target := filepath.Join(destDir, rel)
+		if !strings.HasPrefix(target, filepath.Clean(destDir)+string(filepath.Separator)) {
+			continue // skip paths that escape destDir
+		}
+		if f.FileInfo().IsDir() {
+			if err := os.MkdirAll(target, 0755); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			return err
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return err
+		}
+		out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, f.Mode())
+		if err != nil {
+			rc.Close()
+			return err
+		}
+		if _, err := io.Copy(out, rc); err != nil {
+			out.Close()
+			rc.Close()
+			return err
+		}
+		out.Close()
+		rc.Close()
+	}
+	return nil
 }
 
 func expandPath(p string) string {

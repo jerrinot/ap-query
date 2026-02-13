@@ -1037,3 +1037,101 @@ func TestFindAsprof(t *testing.T) {
 	// Smoke test: should not panic regardless of whether asprof is installed
 	_ = findAsprof()
 }
+
+// ---------------------------------------------------------------------------
+// TestAsprofDownloadURL
+// ---------------------------------------------------------------------------
+
+func TestAsprofDownloadURL(t *testing.T) {
+	url, isTarGz := asprofDownloadURL("v4.3", "4.3")
+	if runtime.GOOS == "darwin" {
+		if isTarGz {
+			t.Error("expected zip for macOS")
+		}
+		if !strings.Contains(url, "macos.zip") {
+			t.Errorf("expected macos.zip in URL, got %s", url)
+		}
+	} else {
+		if !isTarGz {
+			t.Error("expected tar.gz for Linux")
+		}
+		if !strings.Contains(url, "linux-") {
+			t.Errorf("expected linux- in URL, got %s", url)
+		}
+	}
+	if !strings.Contains(url, "v4.3") {
+		t.Errorf("expected v4.3 in URL, got %s", url)
+	}
+	if !strings.Contains(url, "async-profiler-4.3") {
+		t.Errorf("expected async-profiler-4.3 in URL, got %s", url)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestAsprofSearchDirsIncludesApQuery
+// ---------------------------------------------------------------------------
+
+func TestAsprofSearchDirsIncludesApQuery(t *testing.T) {
+	dirs := asprofSearchDirs()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("cannot determine home dir")
+	}
+	expected := filepath.Join(home, ".ap-query", "bin")
+	found := false
+	for _, d := range dirs {
+		if d == expected {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected %s in search dirs", expected)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestResolveTargets
+// ---------------------------------------------------------------------------
+
+func TestResolveTargetsExplicit(t *testing.T) {
+	// Explicit flags bypass auto-detection
+	targets := resolveTargets("/nonexistent", true, false)
+	if len(targets) != 1 || targets[0] != "claude" {
+		t.Errorf("expected [claude], got %v", targets)
+	}
+
+	targets = resolveTargets("/nonexistent", false, true)
+	if len(targets) != 1 || targets[0] != "codex" {
+		t.Errorf("expected [codex], got %v", targets)
+	}
+
+	targets = resolveTargets("/nonexistent", true, true)
+	if len(targets) != 2 {
+		t.Errorf("expected 2 targets, got %v", targets)
+	}
+}
+
+func TestResolveTargetsAutoDetect(t *testing.T) {
+	dir := t.TempDir()
+
+	// No agent dirs → empty
+	targets := resolveTargets(dir, false, false)
+	if len(targets) != 0 {
+		t.Errorf("expected empty, got %v", targets)
+	}
+
+	// Create .claude → detects claude
+	os.MkdirAll(filepath.Join(dir, ".claude"), 0755)
+	targets = resolveTargets(dir, false, false)
+	if len(targets) != 1 || targets[0] != "claude" {
+		t.Errorf("expected [claude], got %v", targets)
+	}
+
+	// Create .agents too → detects both
+	os.MkdirAll(filepath.Join(dir, ".agents"), 0755)
+	targets = resolveTargets(dir, false, false)
+	if len(targets) != 2 {
+		t.Errorf("expected 2 targets, got %v", targets)
+	}
+}

@@ -35,8 +35,10 @@ recordings: triage hot methods, drill into call trees, compare before/after,
 and interpret the results.
 
 The `init` command auto-detects `asprof` and `ap-query` paths and embeds them
-into the skill file — no manual path configuration needed. It also auto-detects
-which agents are installed (`~/.claude`, `~/.agents`) and writes to all of them.
+into the skill file — no manual path configuration needed. If `asprof` is not
+found, it offers to download the latest async-profiler release to `~/.ap-query/`.
+It also auto-detects which agents are installed (`~/.claude`, `~/.agents`) and
+writes to all of them.
 
 ### Install
 
