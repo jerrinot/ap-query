@@ -15,6 +15,7 @@ import (
 	"math"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -732,8 +733,8 @@ Examples:
 
 // Simple flag parser that works with subcommands.
 type flags struct {
-	args []string // positional
-	vals map[string]string
+	args  []string // positional
+	vals  map[string]string
 	bools map[string]bool
 }
 
@@ -784,8 +785,11 @@ func (f *flags) str(keys ...string) string {
 func (f *flags) intVal(keys []string, def int) int {
 	for _, k := range keys {
 		if v, ok := f.vals[k]; ok {
-			n := 0
-			fmt.Sscanf(v, "%d", &n)
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error: invalid integer value for --%s: %q\n", k, v)
+				os.Exit(2)
+			}
 			return n
 		}
 	}
@@ -795,8 +799,11 @@ func (f *flags) intVal(keys []string, def int) int {
 func (f *flags) floatVal(keys []string, def float64) float64 {
 	for _, k := range keys {
 		if v, ok := f.vals[k]; ok {
-			n := 0.0
-			fmt.Sscanf(v, "%f", &n)
+			n, err := strconv.ParseFloat(v, 64)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error: invalid numeric value for --%s: %q\n", k, v)
+				os.Exit(2)
+			}
 			return n
 		}
 	}
@@ -835,15 +842,22 @@ func main() {
 		return
 	}
 
+	eventType := f.str("event", "e")
+	if eventType == "" {
+		eventType = "cpu"
+	}
+	switch eventType {
+	case "cpu", "wall", "alloc", "lock":
+	default:
+		fmt.Fprintf(os.Stderr, "error: unknown event type %q (valid: cpu, wall, alloc, lock)\n", eventType)
+		os.Exit(2)
+	}
+
 	// diff requires two positional args
 	if cmd == "diff" {
 		if len(f.args) < 2 {
 			fmt.Fprintln(os.Stderr, "error: diff requires two files")
 			os.Exit(2)
-		}
-		eventType := f.str("event", "e")
-		if eventType == "" {
-			eventType = "cpu"
 		}
 		thread := f.str("t", "thread")
 		fqn := f.boolean("fqn")
@@ -871,10 +885,6 @@ func main() {
 		usage()
 	}
 	path := f.args[0]
-	eventType := f.str("event", "e")
-	if eventType == "" {
-		eventType = "cpu"
-	}
 	thread := f.str("t", "thread")
 
 	sf, isJFR, err := openInput(path, eventType)

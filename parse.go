@@ -19,8 +19,8 @@ import (
 // ---------------------------------------------------------------------------
 
 type stack struct {
-	frames []string  // root → leaf order
-	lines  []uint32  // parallel to frames, 0 = unknown
+	frames []string // root → leaf order
+	lines  []uint32 // parallel to frames, 0 = unknown
 	count  int
 	thread string // "" if unknown
 }
@@ -247,14 +247,15 @@ func (g *gzipReadCloser) Close() error {
 }
 
 var (
-	collapsedLineRe = regexp.MustCompile(`^(.+)\s+(\d+)$`)
-	threadFrameRe   = regexp.MustCompile(`^\[(.+?)(?:\s+tid=\d+)?\]$`)
+	collapsedLineRe  = regexp.MustCompile(`^(.+)\s+(\d+)$`)
+	threadFrameRe    = regexp.MustCompile(`^\[(.+?)(?:\s+tid=\d+)?\]$`)
 	annotatedFrameRe = regexp.MustCompile(`^(.+?):(\d+)(?:_\[[^\]]*\])?$`)
 )
 
 func parseCollapsed(r io.Reader) (*stackFile, error) {
 	sf := &stackFile{}
 	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line == "" {
