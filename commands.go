@@ -442,7 +442,14 @@ func selfPcts(sf *stackFile, fqn bool) map[string]float64 {
 	return pcts
 }
 
-func cmdDiff(before, after *stackFile, minDelta float64, fqn bool) {
+func truncate(n, top int) int {
+	if top > 0 && top < n {
+		return top
+	}
+	return n
+}
+
+func cmdDiff(before, after *stackFile, minDelta float64, top int, fqn bool) {
 	beforePct := selfPcts(before, fqn)
 	afterPct := selfPcts(after, fqn)
 
@@ -498,6 +505,11 @@ func cmdDiff(before, after *stackFile, minDelta float64, fqn bool) {
 	sort.Slice(newMethods, func(i, j int) bool { return newMethods[i].after > newMethods[j].after })
 	sort.Slice(goneMethods, func(i, j int) bool { return goneMethods[i].before > goneMethods[j].before })
 
+	regressions = regressions[:truncate(len(regressions), top)]
+	improvements = improvements[:truncate(len(improvements), top)]
+	newMethods = newMethods[:truncate(len(newMethods), top)]
+	goneMethods = goneMethods[:truncate(len(goneMethods), top)]
+
 	anyOutput := false
 
 	if len(regressions) > 0 {
@@ -538,7 +550,7 @@ func cmdDiff(before, after *stackFile, minDelta float64, fqn bool) {
 // lines
 // ---------------------------------------------------------------------------
 
-func cmdLines(sf *stackFile, method string, fqn bool) {
+func cmdLines(sf *stackFile, method string, top int, fqn bool) {
 	if sf.totalSamples == 0 {
 		return
 	}
@@ -596,6 +608,7 @@ func cmdLines(sf *stackFile, method string, fqn bool) {
 		ranked = append(ranked, lineEntry{k.name, k.line, c})
 	}
 	sort.Slice(ranked, func(i, j int) bool { return ranked[i].samples > ranked[j].samples })
+	ranked = ranked[:truncate(len(ranked), top)]
 
 	fmt.Printf("%-40s %9s %7s\n", "SOURCE:LINE", "SAMPLES", "PCT")
 	for _, e := range ranked {

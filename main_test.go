@@ -220,7 +220,7 @@ func TestCmdDiff(t *testing.T) {
 	})
 
 	out := captureOutput(func() {
-		cmdDiff(before, after, 0.5, false)
+		cmdDiff(before, after, 0.5, 0, false)
 	})
 
 	if !strings.Contains(out, "REGRESSION") {
@@ -255,7 +255,7 @@ func TestCmdDiffNoChanges(t *testing.T) {
 	})
 
 	out := captureOutput(func() {
-		cmdDiff(sf, sf, 0.5, false)
+		cmdDiff(sf, sf, 0.5, 0, false)
 	})
 
 	if !strings.Contains(out, "no significant changes") {
@@ -275,7 +275,7 @@ func TestCmdLines(t *testing.T) {
 	})
 
 	out := captureOutput(func() {
-		cmdLines(sf, "B.process", false)
+		cmdLines(sf, "B.process", 0, false)
 	})
 
 	if !strings.Contains(out, "SOURCE:LINE") {
@@ -305,7 +305,7 @@ func TestCmdLinesNoMatch(t *testing.T) {
 	})
 
 	out := captureOutput(func() {
-		cmdLines(sf, "Nonexistent", false)
+		cmdLines(sf, "Nonexistent", 0, false)
 	})
 
 	if !strings.Contains(out, "no frames matching") {

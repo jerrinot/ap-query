@@ -50,7 +50,7 @@ Global flags:
 
 Command-specific flags:
   -m METHOD, --method METHOD   Substring match against method names.
-  --top N                      Limit output rows (default: 10 for hot, unlimited for threads).
+  --top N                      Limit output rows (default: 10 for hot; unlimited for diff, lines, threads).
   --depth N                    Max tree/callers depth (default: 4).
   --min-pct F                  Hide tree/callers nodes below this %% (default: 1.0).
   --min-delta F                Hide diff entries below this %% change (default: 0.5).
@@ -225,7 +225,8 @@ func main() {
 			before = before.filterByThread(thread)
 			after = after.filterByThread(thread)
 		}
-		cmdDiff(before, after, minDelta, fqn)
+		top := f.intVal([]string{"top"}, 0)
+		cmdDiff(before, after, minDelta, top, fqn)
 		return
 	}
 
@@ -294,8 +295,9 @@ func main() {
 			fmt.Fprintln(os.Stderr, "error: -m/--method required")
 			os.Exit(2)
 		}
+		top := f.intVal([]string{"top"}, 0)
 		fqn := f.boolean("fqn")
-		cmdLines(sf, method, fqn)
+		cmdLines(sf, method, top, fqn)
 
 	case "info":
 		cmdInfo(path, sf, eventType, isJFR)
