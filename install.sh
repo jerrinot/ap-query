@@ -124,3 +124,6 @@ case "$REPLY" in
     echo "  source ${RC_FILE}"
     ;;
 esac
+
+echo ""
+echo "Next, run 'ap-query init' to complete setup."
