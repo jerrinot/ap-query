@@ -20,12 +20,41 @@ if [ -z "$VERSION" ]; then
   exit 1
 fi
 
-URL="https://github.com/${REPO}/releases/download/${VERSION}/ap-query_${OS}_${ARCH}.tar.gz"
+ARCHIVE="ap-query_${OS}_${ARCH}.tar.gz"
+URL="https://github.com/${REPO}/releases/download/${VERSION}/${ARCHIVE}"
+CHECKSUMS_URL="https://github.com/${REPO}/releases/download/${VERSION}/checksums.txt"
 echo "downloading ap-query ${VERSION} for ${OS}/${ARCH}..."
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 curl -fsSL "$URL" -o "$TMP/ap-query.tar.gz"
+curl -fsSL "$CHECKSUMS_URL" -o "$TMP/checksums.txt"
+
+EXPECTED_HASH=$(awk -v file="$ARCHIVE" '$2 == file || $2 == "*" file { print $1; exit }' "$TMP/checksums.txt")
+if [ -z "$EXPECTED_HASH" ]; then
+  echo "error: checksum for ${ARCHIVE} not found in checksums.txt" >&2
+  exit 1
+fi
+
+if command -v sha256sum >/dev/null 2>&1; then
+  ACTUAL_HASH=$(sha256sum "$TMP/ap-query.tar.gz" | awk '{print $1}')
+elif command -v shasum >/dev/null 2>&1; then
+  ACTUAL_HASH=$(shasum -a 256 "$TMP/ap-query.tar.gz" | awk '{print $1}')
+elif command -v openssl >/dev/null 2>&1; then
+  ACTUAL_HASH=$(openssl dgst -sha256 "$TMP/ap-query.tar.gz" | awk '{print $NF}')
+else
+  echo "error: no SHA-256 tool found (sha256sum, shasum, or openssl required)" >&2
+  exit 1
+fi
+
+if [ "$ACTUAL_HASH" != "$EXPECTED_HASH" ]; then
+  echo "error: checksum mismatch for ${ARCHIVE}" >&2
+  echo "expected: $EXPECTED_HASH" >&2
+  echo "actual:   $ACTUAL_HASH" >&2
+  exit 1
+fi
+
+echo "checksum verified"
 tar -xzf "$TMP/ap-query.tar.gz" -C "$TMP"
 mkdir -p "$INSTALL_DIR"
 install -m 755 "$TMP/ap-query" "$INSTALL_DIR/ap-query"
