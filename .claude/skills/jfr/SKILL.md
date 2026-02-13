@@ -8,9 +8,9 @@ allowed-tools: Bash, Read, Grep, Glob
 
 # JFR Performance Analysis
 
-Analyze async-profiler JFR recordings with `ap-query`.
+Analyze async-profiler JFR recordings with `ap-query` (a Go binary, NOT a Python package —
+do not pip install it). If `ap-query` is not found in PATH, ask the user for its path.
 Run `ap-query --help` for full command and flag reference.
-If not in PATH, ask the user for its location.
 
 Always prefer JFR format over collapsed text. JFR preserves event types (cpu/wall/alloc/lock),
 line numbers, and thread info — collapsed text loses event separation and may lack line data.
