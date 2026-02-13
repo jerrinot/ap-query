@@ -1,5 +1,5 @@
 ---
-name: profile-jfr
+name: jfr
 description: >
   Use when the user wants to analyze Java/JVM performance using async-profiler JFR files
   or collapsed stack traces. Covers profiling analysis, hot method identification,

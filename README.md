@@ -25,6 +25,6 @@ ap-query --help   # full reference
 
 ## Agent integration
 
-Drop the [`profile-jfr`](.claude/skills/profile-jfr/SKILL.md) skill into your
+Drop the [`jfr`](.claude/skills/jfr/SKILL.md) skill into your
 project's `.claude/skills/` to give Claude Code profiling capabilities. The skill
 teaches the agent the analysis workflow and interpretation heuristics.
