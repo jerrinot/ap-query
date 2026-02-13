@@ -1,11 +1,8 @@
 ---
 name: jfr
 description: >
-  Use when the user wants to analyze Java/JVM performance using async-profiler JFR files
-  or collapsed stack traces. Covers profiling analysis, hot method identification,
-  flame graph interpretation, performance regression detection, and optimization guidance.
-  Trigger phrases: "profile", "JFR", "flame graph", "hot methods", "performance",
-  "async-profiler", "cpu profile", "wall clock", "allocation profile", "lock contention".
+  JVM profiling: JFR, async-profiler, hot methods, flame graph, cpu/wall/alloc/lock,
+  performance regression, collapsed stacks.
 allowed-tools: Bash, Read, Grep, Glob
 ---
 
