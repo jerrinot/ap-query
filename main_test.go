@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"bytes"
 	"compress/gzip"
 	"io"
@@ -1202,5 +1203,1214 @@ func TestResolveTargetsAutoDetect(t *testing.T) {
 	targets = resolveTargets(dir, false, false)
 	if len(targets) != 2 {
 		t.Errorf("expected 2 targets, got %v", targets)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestCmdFilter*
+// ---------------------------------------------------------------------------
+
+func TestCmdFilter(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "B.b", "C.c"}, lines: []uint32{0, 0, 0}, count: 10, thread: "main"},
+		{frames: []string{"X.x", "Y.y"}, lines: []uint32{0, 0}, count: 3, thread: ""},
+	})
+
+	out := captureOutput(func() {
+		cmdFilter(sf, "B.b", false)
+	})
+
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 line, got %d: %q", len(lines), out)
+	}
+	// Should output from B.b onward (excluding caller A.a)
+	if !strings.Contains(lines[0], "B.b;C.c") {
+		t.Errorf("expected B.b;C.c, got %q", lines[0])
+	}
+	if !strings.HasPrefix(lines[0], "[main];") {
+		t.Errorf("expected [main] prefix, got %q", lines[0])
+	}
+	if !strings.HasSuffix(lines[0], " 10") {
+		t.Errorf("expected count 10, got %q", lines[0])
+	}
+}
+
+func TestCmdFilterIncludeCallers(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "B.b", "C.c"}, lines: []uint32{0, 0, 0}, count: 10, thread: ""},
+	})
+
+	out := captureOutput(func() {
+		cmdFilter(sf, "B.b", true)
+	})
+
+	if !strings.Contains(out, "A.a;B.b;C.c") {
+		t.Errorf("expected full stack with includeCallers, got %q", out)
+	}
+	// No thread prefix
+	if strings.HasPrefix(strings.TrimSpace(out), "[") {
+		t.Errorf("expected no thread prefix, got %q", out)
+	}
+}
+
+func TestCmdFilterNoMatch(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "B.b"}, lines: []uint32{0, 0}, count: 10, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdFilter(sf, "Nonexistent", false)
+	})
+
+	if strings.TrimSpace(out) != "" {
+		t.Errorf("expected empty output, got %q", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestCmdThreads*
+// ---------------------------------------------------------------------------
+
+func TestCmdThreads(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a"}, lines: []uint32{0}, count: 10, thread: "main"},
+		{frames: []string{"B.b"}, lines: []uint32{0}, count: 5, thread: "worker-1"},
+		{frames: []string{"C.c"}, lines: []uint32{0}, count: 3, thread: ""},
+	})
+
+	out := captureOutput(func() {
+		cmdThreads(sf, 0)
+	})
+
+	if !strings.Contains(out, "THREAD") {
+		t.Error("expected THREAD header")
+	}
+	if !strings.Contains(out, "main") {
+		t.Error("expected 'main' thread")
+	}
+	if !strings.Contains(out, "worker-1") {
+		t.Error("expected 'worker-1' thread")
+	}
+	if !strings.Contains(out, "(no thread info)") {
+		t.Error("expected '(no thread info)' for unthreaded samples")
+	}
+}
+
+func TestCmdThreadsWithTop(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a"}, lines: []uint32{0}, count: 10, thread: "main"},
+		{frames: []string{"B.b"}, lines: []uint32{0}, count: 5, thread: "worker-1"},
+		{frames: []string{"C.c"}, lines: []uint32{0}, count: 3, thread: "worker-2"},
+	})
+
+	out := captureOutput(func() {
+		cmdThreads(sf, 1)
+	})
+
+	if !strings.Contains(out, "main") {
+		t.Error("expected 'main' thread")
+	}
+	if strings.Contains(out, "worker-2") {
+		t.Error("expected worker-2 excluded by top=1")
+	}
+}
+
+func TestCmdThreadsNoThreadInfo(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a"}, lines: []uint32{0}, count: 10, thread: ""},
+	})
+
+	out := captureOutput(func() {
+		cmdThreads(sf, 0)
+	})
+
+	if !strings.Contains(out, "no thread info") {
+		t.Errorf("expected 'no thread info', got %q", out)
+	}
+}
+
+func TestCmdThreadsEmpty(t *testing.T) {
+	sf := makeStackFile(nil)
+
+	out := captureOutput(func() {
+		cmdThreads(sf, 0)
+	})
+
+	if strings.TrimSpace(out) != "" {
+		t.Errorf("expected empty output, got %q", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestCmdHot additional
+// ---------------------------------------------------------------------------
+
+func TestCmdHotAssertBelowFails(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a"}, lines: []uint32{0}, count: 90, thread: "main"},
+		{frames: []string{"B.b"}, lines: []uint32{0}, count: 10, thread: "main"},
+	})
+
+	// A.a is 90%, threshold 50% → should fail
+	captureOutput(func() {
+		err := cmdHot(sf, 0, false, 50.0)
+		if err == nil {
+			t.Error("expected assert-below error")
+		} else if !strings.Contains(err.Error(), "ASSERT FAILED") {
+			t.Errorf("expected ASSERT FAILED, got %q", err.Error())
+		}
+	})
+}
+
+func TestCmdHotAssertBelowPasses(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a"}, lines: []uint32{0}, count: 5, thread: "main"},
+		{frames: []string{"B.b"}, lines: []uint32{0}, count: 5, thread: "main"},
+	})
+
+	// Each is 50%, threshold 90% → should pass
+	captureOutput(func() {
+		err := cmdHot(sf, 0, false, 90.0)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+}
+
+func TestCmdHotEmpty(t *testing.T) {
+	sf := makeStackFile(nil)
+	err := cmdHot(sf, 0, false, 0)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestFlag* (flag accessor methods)
+// ---------------------------------------------------------------------------
+
+func TestFlagStr(t *testing.T) {
+	f := parseFlags([]string{"--event", "wall", "-m", "Foo.bar"})
+
+	if f.str("event") != "wall" {
+		t.Errorf("str(event) = %q, want wall", f.str("event"))
+	}
+	if f.str("m") != "Foo.bar" {
+		t.Errorf("str(m) = %q, want Foo.bar", f.str("m"))
+	}
+	// Multiple keys: first match wins
+	if f.str("missing", "event") != "wall" {
+		t.Errorf("str(missing, event) = %q, want wall", f.str("missing", "event"))
+	}
+	// No match
+	if f.str("nonexistent") != "" {
+		t.Errorf("str(nonexistent) = %q, want empty", f.str("nonexistent"))
+	}
+}
+
+func TestFlagIntVal(t *testing.T) {
+	f := parseFlags([]string{"--top", "20"})
+
+	if f.intVal([]string{"top"}, 10) != 20 {
+		t.Errorf("intVal(top) = %d, want 20", f.intVal([]string{"top"}, 10))
+	}
+	// Default when missing
+	if f.intVal([]string{"missing"}, 42) != 42 {
+		t.Errorf("intVal(missing) = %d, want 42", f.intVal([]string{"missing"}, 42))
+	}
+	// Multiple keys
+	if f.intVal([]string{"missing", "top"}, 0) != 20 {
+		t.Errorf("intVal(missing, top) = %d, want 20", f.intVal([]string{"missing", "top"}, 0))
+	}
+}
+
+func TestFlagFloatVal(t *testing.T) {
+	f := parseFlags([]string{"--min-delta", "0.5"})
+
+	if f.floatVal([]string{"min-delta"}, 1.0) != 0.5 {
+		t.Errorf("floatVal(min-delta) = %f, want 0.5", f.floatVal([]string{"min-delta"}, 1.0))
+	}
+	// Default when missing
+	if f.floatVal([]string{"missing"}, 1.5) != 1.5 {
+		t.Errorf("floatVal(missing) = %f, want 1.5", f.floatVal([]string{"missing"}, 1.5))
+	}
+}
+
+func TestFlagBoolean(t *testing.T) {
+	f := parseFlags([]string{"--fqn", "--include-callers"})
+
+	if !f.boolean("fqn") {
+		t.Error("expected fqn=true")
+	}
+	if !f.boolean("include-callers") {
+		t.Error("expected include-callers=true")
+	}
+	if f.boolean("missing") {
+		t.Error("expected missing=false")
+	}
+	// Multiple keys: any match → true
+	if !f.boolean("missing", "fqn") {
+		t.Error("expected boolean(missing, fqn)=true")
+	}
+}
+
+func TestParseFlagsDoubleDash(t *testing.T) {
+	f := parseFlags([]string{"--top", "20", "--", "--not-a-flag", "file.jfr"})
+
+	if f.vals["top"] != "20" {
+		t.Errorf("top = %q, want 20", f.vals["top"])
+	}
+	if len(f.args) != 2 {
+		t.Fatalf("args = %v, want [--not-a-flag file.jfr]", f.args)
+	}
+	if f.args[0] != "--not-a-flag" || f.args[1] != "file.jfr" {
+		t.Errorf("args = %v", f.args)
+	}
+}
+
+func TestParseFlagsUnknownBoolAtEnd(t *testing.T) {
+	f := parseFlags([]string{"file.jfr", "--verbose"})
+
+	if !f.bools["verbose"] {
+		t.Error("expected --verbose treated as boolean")
+	}
+	if len(f.args) != 1 || f.args[0] != "file.jfr" {
+		t.Errorf("args = %v, want [file.jfr]", f.args)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestDisplayNameFQN
+// ---------------------------------------------------------------------------
+
+func TestDisplayNameFQN(t *testing.T) {
+	got := displayName("com/example/App.process", true)
+	if got != "com.example.App.process" {
+		t.Errorf("displayName(fqn=true) = %q, want com.example.App.process", got)
+	}
+	got = displayName("com/example/App.process", false)
+	if got != "App.process" {
+		t.Errorf("displayName(fqn=false) = %q, want App.process", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestExpandPath
+// ---------------------------------------------------------------------------
+
+func TestExpandPath(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("cannot determine home dir")
+	}
+
+	// Tilde expansion
+	got := expandPath("~/test/path")
+	expected := filepath.Join(home, "test", "path")
+	if got != expected {
+		t.Errorf("expandPath(~/test/path) = %q, want %q", got, expected)
+	}
+
+	// Absolute path unchanged
+	got = expandPath("/absolute/path")
+	if got != "/absolute/path" {
+		t.Errorf("expandPath(/absolute/path) = %q, want /absolute/path", got)
+	}
+
+	// Relative path made absolute
+	got = expandPath("relative/path")
+	if !filepath.IsAbs(got) {
+		t.Errorf("expandPath(relative/path) = %q, expected absolute", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestExtractTarGz / TestExtractZip
+// ---------------------------------------------------------------------------
+
+func TestExtractTarGz(t *testing.T) {
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+
+	entries := []struct {
+		name    string
+		content string
+		mode    int64
+		isDir   bool
+	}{
+		{"async-profiler-4.3-linux-x64/", "", 0755, true},
+		{"async-profiler-4.3-linux-x64/bin/", "", 0755, true},
+		{"async-profiler-4.3-linux-x64/bin/asprof", "#!/bin/bash\necho asprof", 0755, false},
+		{"async-profiler-4.3-linux-x64/lib/libasyncProfiler.so", "fake-lib", 0644, false},
+	}
+
+	for _, e := range entries {
+		if e.isDir {
+			tw.WriteHeader(&tar.Header{Name: e.name, Typeflag: tar.TypeDir, Mode: e.mode})
+		} else {
+			tw.WriteHeader(&tar.Header{Name: e.name, Typeflag: tar.TypeReg, Mode: e.mode, Size: int64(len(e.content))})
+			tw.Write([]byte(e.content))
+		}
+	}
+	tw.Close()
+	gw.Close()
+
+	dir := t.TempDir()
+	if err := extractTarGz(buf.Bytes(), dir); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify flattened extraction
+	asprofPath := filepath.Join(dir, "bin", "asprof")
+	data, err := os.ReadFile(asprofPath)
+	if err != nil {
+		t.Fatalf("asprof not found: %v", err)
+	}
+	if !strings.Contains(string(data), "asprof") {
+		t.Errorf("unexpected asprof content: %q", data)
+	}
+
+	info, err := os.Stat(asprofPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0111 == 0 {
+		t.Error("expected executable permission on asprof")
+	}
+
+	libPath := filepath.Join(dir, "lib", "libasyncProfiler.so")
+	if _, err := os.Stat(libPath); err != nil {
+		t.Fatalf("lib file not found: %v", err)
+	}
+}
+
+func TestExtractTarGzPathTraversal(t *testing.T) {
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+
+	// Entry that tries to escape destDir
+	content := "malicious"
+	tw.WriteHeader(&tar.Header{
+		Name:     "toplevel/../../etc/evil",
+		Typeflag: tar.TypeReg,
+		Mode:     0644,
+		Size:     int64(len(content)),
+	})
+	tw.Write([]byte(content))
+	tw.Close()
+	gw.Close()
+
+	dir := t.TempDir()
+	if err := extractTarGz(buf.Bytes(), dir); err != nil {
+		t.Fatal(err)
+	}
+
+	// The evil file should NOT have been written
+	if _, err := os.Stat(filepath.Join(dir, "..", "etc", "evil")); err == nil {
+		t.Error("path traversal should have been blocked")
+	}
+}
+
+func TestExtractZip(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+
+	// Create directory entries
+	for _, dir := range []string{"async-profiler-4.3-macos/", "async-profiler-4.3-macos/bin/", "async-profiler-4.3-macos/lib/"} {
+		hdr := &zip.FileHeader{Name: dir}
+		hdr.SetMode(0755 | os.ModeDir)
+		if _, err := zw.CreateHeader(hdr); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Create file entries
+	files := []struct {
+		name    string
+		content string
+	}{
+		{"async-profiler-4.3-macos/bin/asprof", "#!/bin/bash\necho asprof"},
+		{"async-profiler-4.3-macos/lib/libasyncProfiler.dylib", "fake-lib"},
+	}
+	for _, f := range files {
+		w, err := zw.Create(f.name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.Write([]byte(f.content))
+	}
+	zw.Close()
+
+	dir := t.TempDir()
+	if err := extractZip(buf.Bytes(), dir); err != nil {
+		t.Fatal(err)
+	}
+
+	asprofPath := filepath.Join(dir, "bin", "asprof")
+	data, err := os.ReadFile(asprofPath)
+	if err != nil {
+		t.Fatalf("asprof not found: %v", err)
+	}
+	if !strings.Contains(string(data), "asprof") {
+		t.Errorf("unexpected content: %q", data)
+	}
+
+	libPath := filepath.Join(dir, "lib", "libasyncProfiler.dylib")
+	if _, err := os.Stat(libPath); err != nil {
+		t.Fatalf("lib file not found: %v", err)
+	}
+}
+
+func TestExtractZipPathTraversal(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+
+	w, _ := zw.Create("toplevel/../../etc/evil")
+	w.Write([]byte("malicious"))
+	zw.Close()
+
+	dir := t.TempDir()
+	if err := extractZip(buf.Bytes(), dir); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, "..", "etc", "evil")); err == nil {
+		t.Error("path traversal should have been blocked")
+	}
+}
+
+func TestExtractZipTopLevelOnly(t *testing.T) {
+	// Top-level entry with no subpath should be skipped
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+
+	hdr := &zip.FileHeader{Name: "toplevel/"}
+	hdr.SetMode(0755 | os.ModeDir)
+	zw.CreateHeader(hdr)
+	zw.Close()
+
+	dir := t.TempDir()
+	if err := extractZip(buf.Bytes(), dir); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestWriteSkill*
+// ---------------------------------------------------------------------------
+
+func TestWriteSkillNew(t *testing.T) {
+	dir := t.TempDir()
+	writeSkill(dir, "claude", "test content", false)
+
+	path := filepath.Join(dir, ".claude", "skills", "jfr", "SKILL.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("skill file not found: %v", err)
+	}
+	if string(data) != "test content" {
+		t.Errorf("content = %q, want 'test content'", data)
+	}
+}
+
+func TestWriteSkillForce(t *testing.T) {
+	dir := t.TempDir()
+	writeSkill(dir, "claude", "original", false)
+	writeSkill(dir, "claude", "updated", true)
+
+	path := filepath.Join(dir, ".claude", "skills", "jfr", "SKILL.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "updated" {
+		t.Errorf("content = %q, want 'updated'", data)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestCmdTree / TestCmdCallers edge cases
+// ---------------------------------------------------------------------------
+
+func TestCmdTreeNoMatch(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "B.b"}, lines: []uint32{0, 0}, count: 10, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdTree(sf, "Nonexistent", 4, 1.0)
+	})
+
+	if !strings.Contains(out, "no frames matching") {
+		t.Errorf("expected 'no frames matching', got %q", out)
+	}
+}
+
+func TestCmdCallersNoMatch(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "B.b"}, lines: []uint32{0, 0}, count: 10, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdCallers(sf, "Nonexistent", 4, 1.0)
+	})
+
+	if !strings.Contains(out, "no frames matching") {
+		t.Errorf("expected 'no frames matching', got %q", out)
+	}
+}
+
+func TestCmdTreeEmpty(t *testing.T) {
+	sf := makeStackFile(nil)
+
+	out := captureOutput(func() {
+		cmdTree(sf, "A.a", 4, 1.0)
+	})
+
+	if strings.TrimSpace(out) != "" {
+		t.Errorf("expected empty output, got %q", out)
+	}
+}
+
+func TestCmdCallersEmpty(t *testing.T) {
+	sf := makeStackFile(nil)
+
+	out := captureOutput(func() {
+		cmdCallers(sf, "A.a", 4, 1.0)
+	})
+
+	if strings.TrimSpace(out) != "" {
+		t.Errorf("expected empty output, got %q", out)
+	}
+}
+
+func TestPrintTreeMultipleMatches(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"com.a.Foo.run"}, lines: []uint32{0}, count: 5, thread: "main"},
+		{frames: []string{"com.b.Bar.run"}, lines: []uint32{0}, count: 5, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdTree(sf, "run", 4, 0.0)
+	})
+
+	if !strings.Contains(out, "matched 2 methods") {
+		t.Errorf("expected 'matched 2 methods', got %q", out)
+	}
+}
+
+func TestPrintTreeMaxDepth(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "B.b", "C.c", "D.d", "E.e"}, lines: []uint32{0, 0, 0, 0, 0}, count: 10, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdTree(sf, "A.a", 2, 0.0)
+	})
+
+	if !strings.Contains(out, "A.a") {
+		t.Error("expected A.a")
+	}
+	if !strings.Contains(out, "B.b") {
+		t.Error("expected B.b at depth 2")
+	}
+	if strings.Contains(out, "C.c") {
+		t.Error("C.c should be cut off at maxDepth=2")
+	}
+}
+
+func TestPrintTreeMinPct(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "B.b"}, lines: []uint32{0, 0}, count: 1, thread: "main"},
+		{frames: []string{"X.x"}, lines: []uint32{0}, count: 99, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdTree(sf, "A.a", 4, 5.0) // A.a is 1% of 100, below 5% threshold
+	})
+
+	if !strings.Contains(out, "no frames matching") || strings.Contains(out, "B.b") {
+		// aggregatePaths will find A.a but printTree will skip it due to minPct
+		// Actually the root A.a has pct=1% < 5% so it won't print
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestCmdDiff additional
+// ---------------------------------------------------------------------------
+
+func TestCmdDiffWithTop(t *testing.T) {
+	before := makeStackFile([]stack{
+		{frames: []string{"A.a"}, lines: []uint32{0}, count: 10, thread: "main"},
+		{frames: []string{"B.b"}, lines: []uint32{0}, count: 10, thread: "main"},
+		{frames: []string{"C.c"}, lines: []uint32{0}, count: 10, thread: "main"},
+	})
+	after := makeStackFile([]stack{
+		{frames: []string{"A.a"}, lines: []uint32{0}, count: 20, thread: "main"},
+		{frames: []string{"B.b"}, lines: []uint32{0}, count: 25, thread: "main"},
+		{frames: []string{"C.c"}, lines: []uint32{0}, count: 30, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdDiff(before, after, 0.1, 1, false)
+	})
+
+	if !strings.Contains(out, "REGRESSION") {
+		t.Error("expected REGRESSION section")
+	}
+	// Count regression lines
+	regrCount := 0
+	inRegr := false
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "REGRESSION") {
+			inRegr = true
+			continue
+		}
+		if inRegr && strings.HasPrefix(line, "  ") {
+			regrCount++
+		} else {
+			inRegr = false
+		}
+	}
+	if regrCount > 1 {
+		t.Errorf("expected at most 1 regression with top=1, got %d", regrCount)
+	}
+}
+
+func TestCmdDiffFQN(t *testing.T) {
+	before := makeStackFile([]stack{
+		{frames: []string{"com/example/A.doWork"}, lines: []uint32{0}, count: 20, thread: "main"},
+		{frames: []string{"com/example/B.process"}, lines: []uint32{0}, count: 10, thread: "main"},
+	})
+	after := makeStackFile([]stack{
+		{frames: []string{"com/example/A.doWork"}, lines: []uint32{0}, count: 10, thread: "main"},
+		{frames: []string{"com/example/B.process"}, lines: []uint32{0}, count: 30, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdDiff(before, after, 0.1, 0, true)
+	})
+
+	if !strings.Contains(out, "com.example.A.doWork") {
+		t.Errorf("expected FQN name in diff output, got %q", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestCmdLines additional
+// ---------------------------------------------------------------------------
+
+func TestCmdLinesErrorNoLineInfo(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "B.b"}, lines: []uint32{0, 0}, count: 10, thread: "main"},
+	})
+
+	err := cmdLines(sf, "B.b", 0, false)
+	if err == nil {
+		t.Error("expected error for method with no line info")
+	} else if !strings.Contains(err.Error(), "no line info") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestCmdLinesWithTop(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a"}, lines: []uint32{10}, count: 5, thread: "main"},
+		{frames: []string{"A.a"}, lines: []uint32{20}, count: 3, thread: "main"},
+		{frames: []string{"A.a"}, lines: []uint32{30}, count: 1, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdLines(sf, "A.a", 2, false)
+	})
+
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	// header + 2 data lines
+	if len(lines) != 3 {
+		t.Errorf("expected 3 lines (header + 2 data), got %d: %q", len(lines), out)
+	}
+}
+
+func TestComputeLinesWithFQN(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"com/example/A.run"}, lines: []uint32{42}, count: 10, thread: "main"},
+	})
+
+	result, hasMethod := computeLines(sf, "A.run", 0, true)
+	if !hasMethod {
+		t.Fatal("expected hasMethod=true")
+	}
+	if len(result) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(result))
+	}
+	if result[0].name != "com.example.A.run" {
+		t.Errorf("expected FQN name, got %q", result[0].name)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestSplitCollapsedLine edge cases
+// ---------------------------------------------------------------------------
+
+func TestSplitCollapsedLineEdgeCases(t *testing.T) {
+	tests := []struct {
+		line      string
+		wantStr   string
+		wantCount int
+	}{
+		{"A;B;C 10", "A;B;C", 10},
+		{"", "", 0},
+		{"nospace", "", 0},
+		{"A;B -5", "", 0},
+		{"A;B 0", "", 0},
+		{"A;B abc", "", 0},
+		{" 10", "", 0}, // space at position 0, i < 1
+	}
+	for _, tt := range tests {
+		s, c := splitCollapsedLine(tt.line)
+		if s != tt.wantStr || c != tt.wantCount {
+			t.Errorf("splitCollapsedLine(%q) = (%q, %d), want (%q, %d)", tt.line, s, c, tt.wantStr, tt.wantCount)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestParseAnnotatedFrame edge cases
+// ---------------------------------------------------------------------------
+
+func TestParseAnnotatedFrameEdgeCases(t *testing.T) {
+	tests := []struct {
+		frame    string
+		wantName string
+		wantLine uint32
+	}{
+		{"A.main:10_[0]", "A.main", 10},
+		{"B.process:42_[j]", "B.process", 42},
+		{"plain.method", "plain.method", 0},
+		{"Method_[j]", "Method_[j]", 0},         // suffix stripped but no colon
+		{"Method:abc_[j]", "Method:abc_[j]", 0}, // non-numeric line
+		{"A:10", "A", 10},                       // no _[] suffix, still annotated
+	}
+	for _, tt := range tests {
+		name, line := parseAnnotatedFrame(tt.frame)
+		if name != tt.wantName || line != tt.wantLine {
+			t.Errorf("parseAnnotatedFrame(%q) = (%q, %d), want (%q, %d)",
+				tt.frame, name, line, tt.wantName, tt.wantLine)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestFilterByThread edge cases
+// ---------------------------------------------------------------------------
+
+func TestFilterByThreadEmpty(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a"}, lines: []uint32{0}, count: 10, thread: "main"},
+	})
+
+	filtered := sf.filterByThread("")
+	if filtered != sf {
+		t.Error("filterByThread('') should return same stackFile")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestParseCollapsed additional
+// ---------------------------------------------------------------------------
+
+func TestParseCollapsedOnlyThreadMarker(t *testing.T) {
+	r := strings.NewReader("[main tid=1] 10\n")
+	sf, err := parseCollapsed(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Line with only a thread marker and no frames should be skipped
+	if len(sf.stacks) != 0 {
+		t.Errorf("expected 0 stacks, got %d", len(sf.stacks))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestOpenInput / TestOpenReader
+// ---------------------------------------------------------------------------
+
+func TestOpenInputCollapsed(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "stacks.txt")
+	os.WriteFile(path, []byte("A;B;C 10\nX;Y 5\n"), 0644)
+
+	sf, isJFR, err := openInput(path, "cpu")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if isJFR {
+		t.Error("expected isJFR=false for .txt file")
+	}
+	if len(sf.stacks) != 2 {
+		t.Errorf("expected 2 stacks, got %d", len(sf.stacks))
+	}
+	if sf.totalSamples != 15 {
+		t.Errorf("totalSamples=%d, want 15", sf.totalSamples)
+	}
+}
+
+func TestOpenReaderGzip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "stacks.txt.gz")
+
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	gw.Write([]byte("A;B;C 10\nX;Y 5\n"))
+	gw.Close()
+	os.WriteFile(path, buf.Bytes(), 0644)
+
+	rc, err := openReader(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rc.Close()
+
+	sf, err := parseCollapsed(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sf.stacks) != 2 {
+		t.Fatalf("expected 2 stacks, got %d", len(sf.stacks))
+	}
+	if sf.totalSamples != 15 {
+		t.Errorf("totalSamples=%d, want 15", sf.totalSamples)
+	}
+}
+
+func TestOpenInputNonExistent(t *testing.T) {
+	_, _, err := openInput("/nonexistent/file.txt", "cpu")
+	if err == nil {
+		t.Error("expected error for nonexistent file")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestReadJFRBytes*
+// ---------------------------------------------------------------------------
+
+func TestReadJFRBytesNonExistent(t *testing.T) {
+	_, err := readJFRBytes("/nonexistent/file.jfr")
+	if err == nil {
+		t.Error("expected error for nonexistent file")
+	}
+}
+
+func TestReadJFRBytesRegular(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.jfr")
+	content := []byte("fake jfr content")
+	os.WriteFile(path, content, 0644)
+
+	data, err := readJFRBytes(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(data, content) {
+		t.Errorf("content = %q, want %q", data, content)
+	}
+}
+
+func TestReadJFRBytesGzip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.jfr.gz")
+
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	gw.Write([]byte("fake jfr content"))
+	gw.Close()
+	os.WriteFile(path, buf.Bytes(), 0644)
+
+	data, err := readJFRBytes(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "fake jfr content" {
+		t.Errorf("content = %q, want 'fake jfr content'", data)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestComputeHotFQN
+// ---------------------------------------------------------------------------
+
+func TestComputeHotFQN(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"com/example/A.run"}, lines: []uint32{0}, count: 10, thread: "main"},
+	})
+
+	ranked := computeHot(sf, true)
+	if len(ranked) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(ranked))
+	}
+	if ranked[0].name != "com.example.A.run" {
+		t.Errorf("expected FQN name, got %q", ranked[0].name)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestCmdHotWithTop
+// ---------------------------------------------------------------------------
+
+func TestCmdHotWithTop(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a"}, lines: []uint32{0}, count: 10, thread: "main"},
+		{frames: []string{"B.b"}, lines: []uint32{0}, count: 5, thread: "main"},
+		{frames: []string{"C.c"}, lines: []uint32{0}, count: 3, thread: "main"},
+		{frames: []string{"D.d"}, lines: []uint32{0}, count: 1, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdHot(sf, 2, false, 0)
+	})
+
+	// Self-time section should have at most 2 entries
+	selfIdx := strings.Index(out, "=== RANK BY SELF TIME ===")
+	totalIdx := strings.Index(out, "=== RANK BY TOTAL TIME ===")
+	selfSection := out[selfIdx:totalIdx]
+
+	dataLines := 0
+	for _, line := range strings.Split(selfSection, "\n") {
+		if strings.Contains(line, "%") && !strings.Contains(line, "METHOD") {
+			dataLines++
+		}
+	}
+	if dataLines != 2 {
+		t.Errorf("expected 2 data lines in self-time with top=2, got %d", dataLines)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestCmdInfoNoThreads
+// ---------------------------------------------------------------------------
+
+func TestCmdInfoNoThreads(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "B.b"}, lines: []uint32{0, 0}, count: 10, thread: ""},
+	})
+
+	out := captureOutput(func() {
+		cmdInfo("fake.txt", sf, "cpu", false, 0, 10, 20)
+	})
+
+	// Should NOT have THREADS section since no thread info
+	if strings.Contains(out, "=== THREADS") {
+		t.Error("expected no THREADS section when no thread info")
+	}
+	if !strings.Contains(out, "Total samples: 10") {
+		t.Errorf("expected 'Total samples: 10', got %q", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestSelfPctsFQN
+// ---------------------------------------------------------------------------
+
+func TestSelfPctsFQN(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"com/example/A.run"}, lines: []uint32{0}, count: 10, thread: "main"},
+	})
+
+	pcts := selfPcts(sf, true)
+	if _, ok := pcts["com.example.A.run"]; !ok {
+		t.Errorf("expected FQN key, got keys: %v", pcts)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestIsGoInstallGOROOT
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// TestCmdDiff filtering
+// ---------------------------------------------------------------------------
+
+func TestCmdDiffFiltersSmallNewGone(t *testing.T) {
+	// NEW method with tiny percentage (below minDelta) should be filtered
+	before := makeStackFile([]stack{
+		{frames: []string{"A.a"}, lines: []uint32{0}, count: 100, thread: "main"},
+		{frames: []string{"B.b"}, lines: []uint32{0}, count: 1, thread: "main"}, // B.b=1% in before, absent in after → GONE
+	})
+	after := makeStackFile([]stack{
+		{frames: []string{"A.a"}, lines: []uint32{0}, count: 100, thread: "main"},
+		{frames: []string{"C.c"}, lines: []uint32{0}, count: 1, thread: "main"}, // C.c=1% in after, absent in before → NEW
+	})
+
+	out := captureOutput(func() {
+		cmdDiff(before, after, 5.0, 0, false) // minDelta=5%: both new/gone are <5%, filtered
+	})
+
+	if !strings.Contains(out, "no significant changes") {
+		t.Errorf("expected 'no significant changes' with high minDelta, got %q", out)
+	}
+}
+
+func TestIsGoInstallGOROOT(t *testing.T) {
+	goroot := runtime.GOROOT()
+	if goroot == "" {
+		t.Skip("GOROOT not set")
+	}
+	if !isGoInstall(filepath.Join(goroot, "bin", "ap-query")) {
+		t.Error("expected true for GOROOT/bin")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestComputeLines dedup (same method+line appears twice in one stack)
+// ---------------------------------------------------------------------------
+
+func TestComputeLinesDedupWithinStack(t *testing.T) {
+	// Same method appears twice in a recursive call at the same line
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.recurse", "A.recurse"}, lines: []uint32{42, 42}, count: 10, thread: "main"},
+	})
+
+	result, hasMethod := computeLines(sf, "A.recurse", 0, false)
+	if !hasMethod {
+		t.Fatal("expected hasMethod=true")
+	}
+	if len(result) != 1 {
+		t.Fatalf("expected 1 entry (deduped), got %d", len(result))
+	}
+	// Should count only once per stack despite two occurrences
+	if result[0].samples != 10 {
+		t.Errorf("expected 10 samples (deduped), got %d", result[0].samples)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestParseChecksums malformed lines
+// ---------------------------------------------------------------------------
+
+func TestParseChecksumsMalformedLines(t *testing.T) {
+	input := "abc123  file1.tar.gz\nthis is three fields\ndef456  file2.tar.gz\n"
+	m, err := parseChecksums(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Malformed line should be skipped
+	if len(m) != 2 {
+		t.Errorf("expected 2 entries, got %d", len(m))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestReplaceBinaryNonExistent
+// ---------------------------------------------------------------------------
+
+func TestReplaceBinaryNonExistent(t *testing.T) {
+	err := replaceBinary("/nonexistent/path/ap-query", []byte("new"))
+	if err == nil {
+		t.Error("expected error for nonexistent path")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestCmdDiff top truncation for all categories
+// ---------------------------------------------------------------------------
+
+func TestCmdDiffTopAllCategories(t *testing.T) {
+	// Create scenario with regressions, improvements, new, and gone
+	before := makeStackFile([]stack{
+		{frames: []string{"A.a"}, lines: []uint32{0}, count: 20, thread: "main"},
+		{frames: []string{"B.b"}, lines: []uint32{0}, count: 20, thread: "main"},
+		{frames: []string{"Gone1.g"}, lines: []uint32{0}, count: 10, thread: "main"},
+		{frames: []string{"Gone2.g"}, lines: []uint32{0}, count: 10, thread: "main"},
+	})
+	after := makeStackFile([]stack{
+		{frames: []string{"A.a"}, lines: []uint32{0}, count: 30, thread: "main"}, // regression
+		{frames: []string{"B.b"}, lines: []uint32{0}, count: 10, thread: "main"}, // improvement
+		{frames: []string{"New1.n"}, lines: []uint32{0}, count: 10, thread: "main"},
+		{frames: []string{"New2.n"}, lines: []uint32{0}, count: 10, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdDiff(before, after, 0.1, 1, false) // top=1: only 1 per category
+	})
+
+	if !strings.Contains(out, "REGRESSION") {
+		t.Error("expected REGRESSION")
+	}
+	if !strings.Contains(out, "IMPROVEMENT") {
+		t.Error("expected IMPROVEMENT")
+	}
+	if !strings.Contains(out, "NEW") {
+		t.Error("expected NEW")
+	}
+	if !strings.Contains(out, "GONE") {
+		t.Error("expected GONE")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestPrintTreeSelfBelowMinPct
+// ---------------------------------------------------------------------------
+
+func TestPrintTreeSelfBelowMinPct(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "B.b"}, lines: []uint32{0, 0}, count: 1, thread: "main"},
+		{frames: []string{"A.a", "C.c"}, lines: []uint32{0, 0}, count: 99, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		// B.b self=1% is below minPct=5%, so self annotation should not show
+		cmdTree(sf, "A.a", 4, 0.1)
+	})
+
+	if !strings.Contains(out, "A.a") {
+		t.Error("expected A.a")
+	}
+	if !strings.Contains(out, "C.c") {
+		t.Error("expected C.c")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestOpenReaderPlainFile
+// ---------------------------------------------------------------------------
+
+func TestOpenReaderPlainFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "stacks.txt")
+	os.WriteFile(path, []byte("A;B 10\n"), 0644)
+
+	rc, err := openReader(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rc.Close()
+
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "A;B 10\n" {
+		t.Errorf("content = %q", data)
+	}
+}
+
+func TestOpenReaderNonExistent(t *testing.T) {
+	_, err := openReader("/nonexistent/file.txt")
+	if err == nil {
+		t.Error("expected error")
+	}
+}
+
+func TestOpenReaderBadGzip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bad.gz")
+	os.WriteFile(path, []byte("not gzip data"), 0644)
+
+	_, err := openReader(path)
+	if err == nil {
+		t.Error("expected error for bad gzip")
 	}
 }

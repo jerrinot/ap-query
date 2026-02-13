@@ -236,7 +236,10 @@ func main() {
 			fmt.Fprintln(os.Stderr, "error: events command requires a JFR file")
 			os.Exit(2)
 		}
-		cmdEvents(f.args[0])
+		if err := cmdEvents(f.args[0]); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
 		return
 	}
 
@@ -290,7 +293,10 @@ func main() {
 		top := f.intVal([]string{"top"}, 10)
 		fqn := f.boolean("fqn")
 		assertBelow := f.floatVal([]string{"assert-below"}, 0)
-		cmdHot(sf, top, fqn, assertBelow)
+		if err := cmdHot(sf, top, fqn, assertBelow); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 
 	case "tree":
 		method := f.str("m", "method")
@@ -336,7 +342,10 @@ func main() {
 		}
 		top := f.intVal([]string{"top"}, 0)
 		fqn := f.boolean("fqn")
-		cmdLines(sf, method, top, fqn)
+		if err := cmdLines(sf, method, top, fqn); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
 
 	case "info":
 		expand := f.intVal([]string{"expand"}, 3)
