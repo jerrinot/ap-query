@@ -5,7 +5,7 @@ CLI for analyzing [async-profiler](https://github.com/async-profiler/async-profi
 Built for coding agents (Claude Code, Codex, etc.), not for human-first
 interactive profiling workflows. Born out of frustration from watching agents
 struggle with raw profiling data - burning tokens, polluting context, and
-producing little actionable insight.
+still getting lost. 
 
 ## Quick Start
 
