@@ -1,9 +1,13 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"io"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -31,6 +35,22 @@ func makeStackFile(stacks []stack) *stackFile {
 		sf.totalSamples += s.count
 	}
 	return sf
+}
+
+// ---------------------------------------------------------------------------
+// TestVersionOutput
+// ---------------------------------------------------------------------------
+
+func TestVersionOutput(t *testing.T) {
+	out := captureOutput(func() {
+		printVersion(os.Stdout)
+	})
+	if !strings.Contains(out, "ap-query version") {
+		t.Errorf("expected 'ap-query version' in output, got %q", out)
+	}
+	if !strings.Contains(out, version) {
+		t.Errorf("expected version %q in output, got %q", version, out)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -698,5 +718,246 @@ func TestParseFlags(t *testing.T) {
 	}
 	if f.vals["assert-below"] != "15.0" {
 		t.Errorf("assert-below = %q, want 15.0", f.vals["assert-below"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestArchiveName
+// ---------------------------------------------------------------------------
+
+func TestArchiveName(t *testing.T) {
+	name := archiveName()
+	expected := "ap-query_" + runtime.GOOS + "_" + runtime.GOARCH + ".tar.gz"
+	if name != expected {
+		t.Errorf("archiveName() = %q, want %q", name, expected)
+	}
+	if !strings.HasPrefix(name, "ap-query_") {
+		t.Errorf("expected prefix ap-query_, got %q", name)
+	}
+	if !strings.HasSuffix(name, ".tar.gz") {
+		t.Errorf("expected suffix .tar.gz, got %q", name)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestParseChecksums
+// ---------------------------------------------------------------------------
+
+func TestParseChecksums(t *testing.T) {
+	input := "abc123  ap-query_linux_amd64.tar.gz\ndef456  ap-query_darwin_arm64.tar.gz\n"
+	m, err := parseChecksums(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(m))
+	}
+	if m["ap-query_linux_amd64.tar.gz"] != "abc123" {
+		t.Errorf("linux hash = %q, want abc123", m["ap-query_linux_amd64.tar.gz"])
+	}
+	if m["ap-query_darwin_arm64.tar.gz"] != "def456" {
+		t.Errorf("darwin hash = %q, want def456", m["ap-query_darwin_arm64.tar.gz"])
+	}
+}
+
+func TestParseChecksumsEmpty(t *testing.T) {
+	_, err := parseChecksums(strings.NewReader(""))
+	if err == nil {
+		t.Error("expected error for empty checksums")
+	}
+}
+
+func TestParseChecksumsBlankLines(t *testing.T) {
+	input := "\nabc123  file1.tar.gz\n\n\ndef456  file2.tar.gz\n\n"
+	m, err := parseChecksums(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(m))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestDownloadURL
+// ---------------------------------------------------------------------------
+
+func TestDownloadURL(t *testing.T) {
+	url := downloadURL("v1.2.3", "ap-query_linux_amd64.tar.gz")
+	expected := "https://github.com/jerrinot/ap-query/releases/download/v1.2.3/ap-query_linux_amd64.tar.gz"
+	if url != expected {
+		t.Errorf("downloadURL() = %q, want %q", url, expected)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestIsGoInstall
+// ---------------------------------------------------------------------------
+
+func TestIsGoInstall(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("cannot determine home dir")
+	}
+
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{filepath.Join(home, "go", "bin", "ap-query"), true},
+		{filepath.Join(home, "go", "bin", "sub", "ap-query"), false},
+		{"/usr/local/bin/ap-query", false},
+		{"/opt/ap-query/ap-query", false},
+		{filepath.Join(home, ".local", "bin", "ap-query"), false},
+	}
+
+	for _, tt := range tests {
+		got := isGoInstall(tt.path)
+		if got != tt.want {
+			t.Errorf("isGoInstall(%q) = %v, want %v", tt.path, got, tt.want)
+		}
+	}
+}
+
+func TestIsGoInstallCustomGOPATH(t *testing.T) {
+	t.Setenv("GOPATH", "/custom/gopath")
+
+	if !isGoInstall("/custom/gopath/bin/ap-query") {
+		t.Error("expected true for custom GOPATH/bin")
+	}
+	if isGoInstall("/other/bin/ap-query") {
+		t.Error("expected false for non-GOPATH path")
+	}
+}
+
+func TestIsGoInstallGOBIN(t *testing.T) {
+	t.Setenv("GOBIN", "/custom/bin")
+
+	if !isGoInstall("/custom/bin/ap-query") {
+		t.Error("expected true for GOBIN path")
+	}
+	if isGoInstall("/other/bin/ap-query") {
+		t.Error("expected false for non-GOBIN path")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestExtractBinary
+// ---------------------------------------------------------------------------
+
+func TestExtractBinary(t *testing.T) {
+	// Create an in-memory tar.gz with an "ap-query" entry
+	content := []byte("fake-binary-content-12345")
+
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+
+	hdr := &tar.Header{
+		Name: "ap-query",
+		Mode: 0755,
+		Size: int64(len(content)),
+	}
+	if err := tw.WriteHeader(hdr); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(content); err != nil {
+		t.Fatal(err)
+	}
+	tw.Close()
+	gw.Close()
+
+	got, err := extractBinary(buf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, content) {
+		t.Errorf("extracted content = %q, want %q", got, content)
+	}
+}
+
+func TestExtractBinaryNotFound(t *testing.T) {
+	// Create tar.gz without "ap-query"
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+
+	hdr := &tar.Header{
+		Name: "other-file",
+		Mode: 0644,
+		Size: 4,
+	}
+	tw.WriteHeader(hdr)
+	tw.Write([]byte("test"))
+	tw.Close()
+	gw.Close()
+
+	_, err := extractBinary(buf.Bytes())
+	if err == nil {
+		t.Error("expected error when ap-query not in archive")
+	}
+}
+
+func TestExtractBinaryInSubdir(t *testing.T) {
+	// Binary nested in a subdirectory (filepath.Base still matches)
+	content := []byte("nested-binary")
+
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+
+	hdr := &tar.Header{
+		Name: "ap-query_linux_amd64/ap-query",
+		Mode: 0755,
+		Size: int64(len(content)),
+	}
+	tw.WriteHeader(hdr)
+	tw.Write(content)
+	tw.Close()
+	gw.Close()
+
+	got, err := extractBinary(buf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, content) {
+		t.Errorf("extracted = %q, want %q", got, content)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestReplaceBinary
+// ---------------------------------------------------------------------------
+
+func TestReplaceBinary(t *testing.T) {
+	dir := t.TempDir()
+	origPath := filepath.Join(dir, "ap-query")
+
+	// Create original file with specific permissions
+	if err := os.WriteFile(origPath, []byte("old"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	newContent := []byte("new-binary-content")
+	if err := replaceBinary(origPath, newContent); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify content replaced
+	got, err := os.ReadFile(origPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, newContent) {
+		t.Errorf("content = %q, want %q", got, newContent)
+	}
+
+	// Verify permissions preserved
+	info, err := os.Stat(origPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0755 {
+		t.Errorf("permissions = %o, want 755", info.Mode().Perm())
 	}
 }

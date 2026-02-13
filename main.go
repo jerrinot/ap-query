@@ -11,11 +11,24 @@
 package main
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
+	"time"
 )
+
+var version = "dev"
 
 // ---------------------------------------------------------------------------
 // CLI
@@ -43,6 +56,8 @@ Commands:
   collapse  Emit collapsed-stack text (useful for piping JFR output).
   filter    Output stacks passing through a method (-m required).
   events    List event types in a JFR file (JFR only).
+  version   Print version and check for updates.
+  update    Download and install the latest release.
 
 Global flags:
   --event TYPE, -e TYPE   Event type: cpu (default), wall, alloc, lock. JFR only.
@@ -179,6 +194,14 @@ func main() {
 	if cmd == "-h" || cmd == "--help" || cmd == "help" {
 		usage()
 	}
+	if cmd == "version" || cmd == "--version" {
+		printVersion(os.Stdout)
+		return
+	}
+	if cmd == "update" {
+		cmdUpdate()
+		return
+	}
 	f := parseFlags(os.Args[2:])
 
 	eventType := f.str("event", "e")
@@ -311,4 +334,273 @@ func main() {
 	default:
 		usage()
 	}
+}
+
+// ---------------------------------------------------------------------------
+// version
+// ---------------------------------------------------------------------------
+
+func printVersion(w *os.File) {
+	fmt.Fprintf(w, "ap-query version %s\n", version)
+	latest := checkLatestVersion()
+	if latest != "" && latest != version && latest != "v"+version {
+		fmt.Fprintf(w, "A newer version is available: %s\n", latest)
+		fmt.Fprintf(w, "  https://github.com/jerrinot/ap-query/releases/latest\n")
+	}
+}
+
+func checkLatestVersion() string {
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get("https://api.github.com/repos/jerrinot/ap-query/releases/latest")
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return ""
+	}
+	var release struct {
+		TagName string `json:"tag_name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		return ""
+	}
+	return release.TagName
+}
+
+// ---------------------------------------------------------------------------
+// update
+// ---------------------------------------------------------------------------
+
+func cmdUpdate() {
+	if version == "dev" {
+		fmt.Fprintln(os.Stderr, "error: cannot self-update a dev build; use 'go install' or download a release binary")
+		os.Exit(1)
+	}
+
+	execPath, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: cannot determine executable path: %v\n", err)
+		os.Exit(1)
+	}
+	execPath, err = filepath.EvalSymlinks(execPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: cannot resolve executable path: %v\n", err)
+		os.Exit(1)
+	}
+
+	if isGoInstall(execPath) {
+		fmt.Fprintln(os.Stderr, "It looks like ap-query was installed via 'go install'.")
+		fmt.Fprintln(os.Stderr, "Please update with:  go install github.com/jerrinot/ap-query@latest")
+		return
+	}
+
+	latest := checkLatestVersion()
+	if latest == "" {
+		fmt.Fprintln(os.Stderr, "error: could not check latest version (network error?)")
+		os.Exit(1)
+	}
+
+	currentNorm := strings.TrimPrefix(version, "v")
+	latestNorm := strings.TrimPrefix(latest, "v")
+	if currentNorm == latestNorm {
+		fmt.Printf("ap-query %s is already the latest version.\n", version)
+		return
+	}
+
+	fmt.Printf("Updating ap-query %s → %s ...\n", version, latest)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+
+	// Download and parse checksums
+	checksumsURL := downloadURL(latest, "checksums.txt")
+	resp, err := client.Get(checksumsURL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: downloading checksums: %v\n", err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		fmt.Fprintf(os.Stderr, "error: downloading checksums: HTTP %d\n", resp.StatusCode)
+		os.Exit(1)
+	}
+	checksums, err := parseChecksums(resp.Body)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: parsing checksums: %v\n", err)
+		os.Exit(1)
+	}
+
+	archive := archiveName()
+	expectedHash, ok := checksums[archive]
+	if !ok {
+		fmt.Fprintf(os.Stderr, "error: no checksum found for %s\n", archive)
+		os.Exit(1)
+	}
+
+	// Download and verify archive
+	archiveURL := downloadURL(latest, archive)
+	archiveData, err := downloadAndVerify(archiveURL, expectedHash, client)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Extract binary
+	binaryData, err := extractBinary(archiveData)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Replace current binary
+	if err := replaceBinary(execPath, binaryData); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Successfully updated to ap-query %s\n", latest)
+}
+
+func isGoInstall(execPath string) bool {
+	dir := filepath.Dir(execPath)
+
+	if gobin := os.Getenv("GOBIN"); gobin != "" && dir == gobin {
+		return true
+	}
+
+	gopath := os.Getenv("GOPATH")
+	if gopath == "" {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			gopath = filepath.Join(home, "go")
+		}
+	}
+	if gopath != "" && dir == filepath.Join(gopath, "bin") {
+		return true
+	}
+
+	goroot := runtime.GOROOT()
+	if goroot != "" && dir == filepath.Join(goroot, "bin") {
+		return true
+	}
+	return false
+}
+
+func archiveName() string {
+	return fmt.Sprintf("ap-query_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH)
+}
+
+func downloadURL(tag, filename string) string {
+	return fmt.Sprintf("https://github.com/jerrinot/ap-query/releases/download/%s/%s", tag, filename)
+}
+
+func parseChecksums(r io.Reader) (map[string]string, error) {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]string)
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.Fields(line)
+		if len(parts) != 2 {
+			continue
+		}
+		hash := parts[0]
+		filename := parts[1]
+		result[filename] = hash
+	}
+	if len(result) == 0 {
+		return nil, fmt.Errorf("no checksums found")
+	}
+	return result, nil
+}
+
+func downloadAndVerify(url, expectedHash string, client *http.Client) ([]byte, error) {
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("downloading %s: %v", url, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("downloading %s: HTTP %d", url, resp.StatusCode)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading response: %v", err)
+	}
+
+	h := sha256.Sum256(data)
+	actual := hex.EncodeToString(h[:])
+	if actual != expectedHash {
+		return nil, fmt.Errorf("checksum mismatch: expected %s, got %s", expectedHash, actual)
+	}
+	return data, nil
+}
+
+func extractBinary(archiveData []byte) ([]byte, error) {
+	gz, err := gzip.NewReader(bytes.NewReader(archiveData))
+	if err != nil {
+		return nil, fmt.Errorf("decompressing archive: %v", err)
+	}
+	defer gz.Close()
+
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("reading tar: %v", err)
+		}
+		if filepath.Base(hdr.Name) == "ap-query" && hdr.Typeflag == tar.TypeReg {
+			data, err := io.ReadAll(tr)
+			if err != nil {
+				return nil, fmt.Errorf("extracting binary: %v", err)
+			}
+			return data, nil
+		}
+	}
+	return nil, fmt.Errorf("ap-query binary not found in archive")
+}
+
+func replaceBinary(execPath string, newBinary []byte) error {
+	dir := filepath.Dir(execPath)
+
+	// Get permissions of old binary
+	info, err := os.Stat(execPath)
+	if err != nil {
+		return fmt.Errorf("stat %s: %v", execPath, err)
+	}
+	mode := info.Mode().Perm()
+
+	// Write to temp file in same directory (required for atomic rename)
+	tmp, err := os.CreateTemp(dir, "ap-query-update-*")
+	if err != nil {
+		return fmt.Errorf("creating temp file: %v", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath) // cleanup on failure
+
+	if _, err := tmp.Write(newBinary); err != nil {
+		tmp.Close()
+		return fmt.Errorf("writing temp file: %v", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("closing temp file: %v", err)
+	}
+
+	if err := os.Chmod(tmpPath, mode); err != nil {
+		return fmt.Errorf("setting permissions: %v", err)
+	}
+
+	if err := os.Rename(tmpPath, execPath); err != nil {
+		return fmt.Errorf("replacing binary: %v", err)
+	}
+	return nil
 }
