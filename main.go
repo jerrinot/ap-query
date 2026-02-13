@@ -47,7 +47,7 @@ Input auto-detection:
 
 Commands:
   info      One-shot triage: events, threads, hot methods, and drill-down.
-  hot       Rank methods by self-time (leaf cost).
+  hot       Rank methods by self-time and total-time.
   tree      Call tree descending from a method (-m required).
   callers   Callers ascending to a method (-m required).
   lines     Source-line breakdown inside a method (-m required).

@@ -116,7 +116,7 @@ func TestComputeHot(t *testing.T) {
 		t.Fatal("computeHot returned empty")
 	}
 
-	// Self counts: C.c=10, B.b=5, D.d=3
+	// Self counts: C.c=10, B.b=5, D.d=3; A.a has selfCount=0 (never a leaf)
 	if ranked[0].name != "C.c" || ranked[0].selfCount != 10 {
 		t.Errorf("expected C.c with self=10 at top, got %s with self=%d", ranked[0].name, ranked[0].selfCount)
 	}
@@ -125,12 +125,78 @@ func TestComputeHot(t *testing.T) {
 	}
 
 	// Total counts: A.a=18 (all), B.b=15 (10+5), C.c=10, D.d=3
+	found := make(map[string]hotEntry)
 	for _, e := range ranked {
-		if e.name == "A.a" && e.totalCount != 18 {
-			t.Errorf("A.a total=%d, want 18", e.totalCount)
+		found[e.name] = e
+	}
+
+	if e, ok := found["A.a"]; !ok {
+		t.Error("A.a missing from results (should appear as total-only entry)")
+	} else {
+		if e.selfCount != 0 {
+			t.Errorf("A.a selfCount=%d, want 0", e.selfCount)
 		}
-		if e.name == "B.b" && e.totalCount != 15 {
+		if e.totalCount != 18 {
+			t.Errorf("A.a totalCount=%d, want 18", e.totalCount)
+		}
+	}
+	if e, ok := found["B.b"]; ok {
+		if e.totalCount != 15 {
 			t.Errorf("B.b total=%d, want 15", e.totalCount)
+		}
+	}
+}
+
+func TestCmdHotDualOutput(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "B.b", "C.c"}, lines: []uint32{0, 0, 0}, count: 10, thread: "main"},
+		{frames: []string{"A.a", "B.b"}, lines: []uint32{0, 0}, count: 5, thread: "main"},
+		{frames: []string{"A.a", "D.d"}, lines: []uint32{0, 0}, count: 3, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdHot(sf, 0, false, 0)
+	})
+
+	if !strings.Contains(out, "=== RANK BY SELF TIME ===") {
+		t.Fatal("expected self-time section header")
+	}
+	if !strings.Contains(out, "=== RANK BY TOTAL TIME ===") {
+		t.Fatal("expected total-time section header")
+	}
+
+	// Total-time section should have A.a first (total=18)
+	totalIdx := strings.Index(out, "=== RANK BY TOTAL TIME ===")
+	totalSection := out[totalIdx:]
+	lines := strings.Split(strings.TrimSpace(totalSection), "\n")
+	// lines[0] = header, lines[1] = column header, lines[2] = first data row
+	if len(lines) < 3 {
+		t.Fatalf("expected at least 3 lines in total section, got %d", len(lines))
+	}
+	if !strings.Contains(lines[2], "A.a") {
+		t.Errorf("expected A.a first in total-time section, got %q", lines[2])
+	}
+
+	// SAMPLES column in total-time section must reflect totalCount, not selfCount.
+	// A.a is a pure dispatcher (selfCount=0, totalCount=18) — its SAMPLES must be 18.
+	if !strings.Contains(lines[2], "18") {
+		t.Errorf("expected A.a to show 18 samples in total-time section, got %q", lines[2])
+	}
+	// Self-time section: A.a should show 0 samples (selfCount=0)
+	selfIdx := strings.Index(out, "=== RANK BY SELF TIME ===")
+	selfSection := out[selfIdx:totalIdx]
+	if !strings.Contains(selfSection, "A.a") {
+		t.Error("expected A.a in self-time section")
+	}
+	for _, line := range strings.Split(selfSection, "\n") {
+		if strings.Contains(line, "A.a") {
+			// Should end with 0 samples
+			fields := strings.Fields(line)
+			last := fields[len(fields)-1]
+			if last != "0" {
+				t.Errorf("expected A.a to show 0 samples in self-time section, got %q", last)
+			}
+			break
 		}
 	}
 }
@@ -356,8 +422,11 @@ func TestCmdInfo(t *testing.T) {
 	if !strings.Contains(out, "main") {
 		t.Error("expected 'main' thread")
 	}
-	if !strings.Contains(out, "=== HOT METHODS (top") {
-		t.Error("expected HOT METHODS section")
+	if !strings.Contains(out, "=== RANK BY SELF TIME (top") {
+		t.Error("expected RANK BY SELF TIME section")
+	}
+	if !strings.Contains(out, "=== RANK BY TOTAL TIME (top") {
+		t.Error("expected RANK BY TOTAL TIME section")
 	}
 	if !strings.Contains(out, "Total samples: 15") {
 		t.Errorf("expected 'Total samples: 15', got %q", out)

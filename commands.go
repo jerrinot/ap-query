@@ -72,6 +72,11 @@ func computeHot(sf *stackFile, fqn bool) []hotEntry {
 	for name, sc := range selfCounts {
 		ranked = append(ranked, hotEntry{name, sc, totalCounts[name]})
 	}
+	for name, tc := range totalCounts {
+		if _, hasSelf := selfCounts[name]; !hasSelf {
+			ranked = append(ranked, hotEntry{name, 0, tc})
+		}
+	}
 	sort.Slice(ranked, func(i, j int) bool { return ranked[i].selfCount > ranked[j].selfCount })
 	return ranked
 }
@@ -81,17 +86,39 @@ func cmdHot(sf *stackFile, top int, fqn bool, assertBelow float64) {
 	if len(ranked) == 0 {
 		return
 	}
-	if top > 0 && top < len(ranked) {
-		ranked = ranked[:top]
+
+	// Self-time section
+	selfRanked := ranked
+	if top > 0 && top < len(selfRanked) {
+		selfRanked = selfRanked[:top]
 	}
 
+	fmt.Println("=== RANK BY SELF TIME ===")
 	fmt.Printf("%-50s %7s %7s %9s\n", "METHOD", "SELF%", "TOTAL%", "SAMPLES")
-	for _, e := range ranked {
+	for _, e := range selfRanked {
 		sp := 100.0 * float64(e.selfCount) / float64(sf.totalSamples)
 		tp := 100.0 * float64(e.totalCount) / float64(sf.totalSamples)
 		fmt.Printf("%-50s %6.1f%% %6.1f%% %9d\n", e.name, sp, tp, e.selfCount)
 	}
 
+	// Total-time section
+	totalRanked := make([]hotEntry, len(ranked))
+	copy(totalRanked, ranked)
+	sort.Slice(totalRanked, func(i, j int) bool { return totalRanked[i].totalCount > totalRanked[j].totalCount })
+	if top > 0 && top < len(totalRanked) {
+		totalRanked = totalRanked[:top]
+	}
+
+	fmt.Println()
+	fmt.Println("=== RANK BY TOTAL TIME ===")
+	fmt.Printf("%-50s %7s %7s %9s\n", "METHOD", "SELF%", "TOTAL%", "SAMPLES")
+	for _, e := range totalRanked {
+		sp := 100.0 * float64(e.selfCount) / float64(sf.totalSamples)
+		tp := 100.0 * float64(e.totalCount) / float64(sf.totalSamples)
+		fmt.Printf("%-50s %6.1f%% %6.1f%% %9d\n", e.name, sp, tp, e.totalCount)
+	}
+
+	// assert-below stays on self-time section only
 	if assertBelow > 0 && len(ranked) > 0 {
 		selfPct := 100.0 * float64(ranked[0].selfCount) / float64(sf.totalSamples)
 		if selfPct >= assertBelow {
@@ -670,16 +697,33 @@ func cmdInfo(path string, sf *stackFile, eventType string, isJFR bool, expand, t
 	// === HOT METHODS ===
 	hot := computeHot(sf, false)
 	if len(hot) > 0 {
-		shown := hot
-		if topMethods > 0 && topMethods < len(shown) {
-			shown = shown[:topMethods]
+		// Self-time section
+		selfShown := hot
+		if topMethods > 0 && topMethods < len(selfShown) {
+			selfShown = selfShown[:topMethods]
 		}
-		fmt.Printf("=== HOT METHODS (top %d) ===\n", len(shown))
+		fmt.Printf("=== RANK BY SELF TIME (top %d) ===\n", len(selfShown))
 		fmt.Printf("%-50s %7s %7s %9s\n", "METHOD", "SELF%", "TOTAL%", "SAMPLES")
-		for _, e := range shown {
+		for _, e := range selfShown {
 			sp := 100.0 * float64(e.selfCount) / float64(sf.totalSamples)
 			tp := 100.0 * float64(e.totalCount) / float64(sf.totalSamples)
 			fmt.Printf("%-50s %6.1f%% %6.1f%% %9d\n", e.name, sp, tp, e.selfCount)
+		}
+
+		// Total-time section
+		totalShown := make([]hotEntry, len(hot))
+		copy(totalShown, hot)
+		sort.Slice(totalShown, func(i, j int) bool { return totalShown[i].totalCount > totalShown[j].totalCount })
+		if topMethods > 0 && topMethods < len(totalShown) {
+			totalShown = totalShown[:topMethods]
+		}
+		fmt.Println()
+		fmt.Printf("=== RANK BY TOTAL TIME (top %d) ===\n", len(totalShown))
+		fmt.Printf("%-50s %7s %7s %9s\n", "METHOD", "SELF%", "TOTAL%", "SAMPLES")
+		for _, e := range totalShown {
+			sp := 100.0 * float64(e.selfCount) / float64(sf.totalSamples)
+			tp := 100.0 * float64(e.totalCount) / float64(sf.totalSamples)
+			fmt.Printf("%-50s %6.1f%% %6.1f%% %9d\n", e.name, sp, tp, e.totalCount)
 		}
 	}
 
