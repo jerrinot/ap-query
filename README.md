@@ -32,7 +32,7 @@ ap-query init --project
 ### 3) Ask your agent to run the workflow
 
 ```text
-Profile this JVM with async-profiler and analyze the result with ap-query.
+Profile this program with async-profiler and analyze the result with ap-query.
 Start with hotspot triage, then drill down and report concrete next actions.
 ```
 
