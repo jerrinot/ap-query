@@ -1,4 +1,4 @@
-module ap-query
+module github.com/jerrinot/ap-query
 
 go 1.24.4
 

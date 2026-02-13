@@ -10,10 +10,14 @@ parseable without extra tooling.
 Also accepts collapsed-stack text files and stdin, but prefer JFR — it preserves
 event types, line numbers, and thread info.
 
-## Build
+## Install
 
 ```bash
-go build -o ap-query .
+# One-liner (downloads latest release)
+curl -fsSL https://raw.githubusercontent.com/jerrinot/ap-query/master/install.sh | sh
+
+# Or with Go
+go install github.com/jerrinot/ap-query@latest
 ```
 
 ## Usage
@@ -25,6 +29,17 @@ ap-query --help   # full reference
 
 ## Agent integration
 
-Drop the [`jfr`](.claude/skills/jfr/SKILL.md) skill into your
-project's `.claude/skills/` to give Claude Code profiling capabilities. The skill
-teaches the agent the analysis workflow and interpretation heuristics.
+Drop the [`jfr`](.claude/skills/jfr/SKILL.md) skill into your project's
+`.claude/skills/` to give Claude Code profiling capabilities. The skill teaches
+the agent the analysis workflow and interpretation heuristics.
+
+## Release
+
+Tag a version to trigger a release build:
+
+```bash
+git tag v0.1.0 && git push --tags
+```
+
+This builds binaries for linux/darwin x amd64/arm64 via GoReleaser and publishes
+them as a GitHub release.
