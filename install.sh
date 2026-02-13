@@ -32,7 +32,66 @@ install -m 755 "$TMP/ap-query" "$INSTALL_DIR/ap-query"
 
 echo "installed ap-query to ${INSTALL_DIR}/ap-query"
 
+# Check if INSTALL_DIR is already in PATH
 case ":$PATH:" in
-  *":${INSTALL_DIR}:"*) ;;
-  *) echo "NOTE: ${INSTALL_DIR} is not in your PATH. Add it with: export PATH=\"${INSTALL_DIR}:\$PATH\"" ;;
+  *":${INSTALL_DIR}:"*) exit 0 ;;
+esac
+
+# Detect shell rc file
+RC_FILE=""
+SHELL_NAME=$(basename "${SHELL:-/bin/sh}")
+case "$SHELL_NAME" in
+  zsh)  RC_FILE="$HOME/.zshrc" ;;
+  bash)
+    # macOS terminals open login shells (.bash_profile), Linux opens non-login shells (.bashrc)
+    case "$OS" in
+      darwin) RC_FILE="$HOME/.bash_profile" ;;
+      *)      RC_FILE="$HOME/.bashrc" ;;
+    esac
+    ;;
+  fish) RC_FILE="$HOME/.config/fish/config.fish" ;;
+esac
+
+if [ -z "$RC_FILE" ]; then
+  echo "NOTE: ${INSTALL_DIR} is not in your PATH. Add it with:"
+  echo "  export PATH=\"${INSTALL_DIR}:\$PATH\""
+  exit 0
+fi
+
+# Ask user
+printf "%s is not in your PATH. Add it to %s? [Y/n] " "$INSTALL_DIR" "$RC_FILE"
+
+# When piped through sh, stdin is the script itself — reopen from tty
+if [ ! -t 0 ]; then
+  if ! (exec </dev/tty) 2>/dev/null; then
+    echo ""
+    echo "NOTE: ${INSTALL_DIR} is not in your PATH. Add it with:"
+    echo "  export PATH=\"${INSTALL_DIR}:\$PATH\""
+    exit 0
+  fi
+  exec </dev/tty
+fi
+
+read -r REPLY
+case "$REPLY" in
+  [nN]*)
+    echo "skipped. To add it manually:"
+    echo "  export PATH=\"${INSTALL_DIR}:\$PATH\""
+    ;;
+  *)
+    case "$SHELL_NAME" in
+      fish)
+        EXPORT_LINE="fish_add_path ${INSTALL_DIR}"
+        ;;
+      *)
+        EXPORT_LINE="export PATH=\"${INSTALL_DIR}:\$PATH\""
+        ;;
+    esac
+    mkdir -p "$(dirname "$RC_FILE")"
+    echo "" >> "$RC_FILE"
+    echo "# Added by ap-query installer" >> "$RC_FILE"
+    echo "$EXPORT_LINE" >> "$RC_FILE"
+    echo "Added to ${RC_FILE}. Reload with:"
+    echo "  source ${RC_FILE}"
+    ;;
 esac
