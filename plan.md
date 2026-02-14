@@ -35,6 +35,16 @@ When the chosen child has siblings (other children of the same parent above min-
 
 This tells the user: "I chose this path, but there were other options; here's the strongest alternative."
 
+### Actionable leaf summary
+
+After the trace, print a summary line identifying the leaf method so agents can directly use it in follow-up commands without parsing indentation:
+
+```
+Hottest leaf: LockedCacheWrapper.read (self=1.4%)
+```
+
+When multiple methods matched (multiple roots), print one summary per root trace.
+
 ### Key behaviors:
 1. **`-m` is required** — unlike `tree`, which can show all roots, `trace` needs a starting method.
 2. **`--event` / `-e`** — select event type (cpu, wall, alloc, lock). Defaults to cpu. Handled by the global flag flow in `main.go` — the `stackFile` passed to `cmdTrace` is already filtered to the selected event.
@@ -43,8 +53,9 @@ This tells the user: "I chose this path, but there were other options; here's th
 5. **No depth limit** — traverse all the way to the leaf.
 6. **`--min-pct`** — stop if the hottest child falls below this threshold (default: 0.5). Also used to filter siblings for the annotation (siblings below min-pct are not counted).
 7. **Self-time annotation** — annotate the leaf (last node) with `← self=X.X%` when it has self-time samples >= min-pct.
-8. **Multiple matched methods** — if `-m` matches multiple method names, print a header like `# matched N methods: ...` (same as `tree`), then show the trace for each root, sorted by sample count descending.
-9. **`--fqn`** — show fully-qualified names if present.
+8. **Leaf summary line** — after the trace, print `Hottest leaf: Method.name (self=X.X%)` so agents can grab the leaf for follow-up commands (`lines`, `callers`).
+9. **Multiple matched methods** — if `-m` matches multiple method names, print a header like `# matched N methods: ...` (same as `tree`), then show the trace for each root, sorted by sample count descending. Each root gets its own leaf summary.
+10. **`--fqn`** — show fully-qualified names if present.
 
 ## Implementation Steps
 
@@ -58,6 +69,7 @@ The function will:
 3. Print one line per level with increasing indent. If there are siblings above min-pct, append the annotation `(+N siblings, next: X.X% Name)`.
 4. Annotate the leaf with self-time if non-zero and >= min-pct.
 5. Stop when no children exist or the hottest child's percentage falls below `minPct`.
+6. After the trace, print `Hottest leaf: <name> (self=X.X%)` summary line.
 
 Note: `cmdTrace` receives a `*stackFile` that is already filtered by event type and thread (handled in `main.go`). The function itself does not need to know about event types.
 
@@ -101,13 +113,17 @@ The global `--event` / `-e` flag is already parsed and used to build the `stackF
 20. **TestCmdTraceMatchAtLeaf** — Matched method is already the leaf of all stacks → single line output.
 21. **TestCmdTraceMultipleRootsWithDifferentDepths** — Matched method appears in stacks of varying depth.
 22. **TestCmdTraceBranchingSiblingAnnotationFormat** — Verify exact format of the sibling annotation string.
+23. **TestCmdTraceLeafSummary** — Verify `Hottest leaf: X.x (self=Y.Y%)` appears after the trace.
+24. **TestCmdTraceLeafSummaryMultipleRoots** — Multiple matched methods each get their own leaf summary line.
+25. **TestCmdTraceLeafSummaryMatchAtLeaf** — When matched method is the leaf, leaf summary shows same method.
+26. **TestCmdTraceLeafSummaryNoSelfTime** — Leaf with 0 self-time still shows in summary (self=0.0%).
 
 #### JFR integration tests (event selection tested via different JFR fixtures):
 
-23. **TestJFRTraceCommand** — Run trace against `cpu.jfr` with a known method, verify output structure.
-24. **TestJFRTraceWithThreadFilter** — Filter to specific thread, then trace.
-25. **TestJFRTraceWallEvent** — Run trace against `wall.jfr` (event=wall), verify it picks up wall-clock samples, not cpu.
-26. **TestJFRTraceMultiEventFile** — Run trace against `multi.jfr` with different `--event` values, verify different results for cpu vs wall vs alloc.
+27. **TestJFRTraceCommand** — Run trace against `cpu.jfr` with a known method, verify output structure and leaf summary.
+28. **TestJFRTraceWithThreadFilter** — Filter to specific thread, then trace.
+29. **TestJFRTraceWallEvent** — Run trace against `wall.jfr` (event=wall), verify it picks up wall-clock samples, not cpu.
+30. **TestJFRTraceMultiEventFile** — Run trace against `multi.jfr` with different `--event` values, verify different results for cpu vs wall vs alloc.
 
 ## Files Modified
 
