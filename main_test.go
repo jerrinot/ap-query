@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -2435,5 +2436,259 @@ func TestOpenReaderBadGzip(t *testing.T) {
 	_, err := openReader(path)
 	if err == nil {
 		t.Error("expected error for bad gzip")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// JFR integration tests — real async-profiler JFR fixtures
+// ---------------------------------------------------------------------------
+
+func jfrFixture(name string) string {
+	return filepath.Join("testdata", name)
+}
+
+func TestJFRDiscoverEventsSingle(t *testing.T) {
+	tests := []struct {
+		file      string
+		wantEvent string
+	}{
+		{"cpu.jfr", "cpu"},
+		{"wall.jfr", "wall"},
+		{"alloc.jfr", "alloc"},
+		{"lock.jfr", "lock"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.file, func(t *testing.T) {
+			counts, err := discoverEvents(jfrFixture(tt.file))
+			if err != nil {
+				t.Fatalf("discoverEvents(%s): %v", tt.file, err)
+			}
+			if len(counts) != 1 {
+				t.Errorf("expected exactly 1 event type, got %d: %v", len(counts), counts)
+			}
+			n, ok := counts[tt.wantEvent]
+			if !ok {
+				t.Errorf("expected event type %q, got %v", tt.wantEvent, counts)
+			}
+			if n <= 0 {
+				t.Errorf("expected >0 samples for %q, got %d", tt.wantEvent, n)
+			}
+		})
+	}
+}
+
+func TestJFRDiscoverEventsMulti(t *testing.T) {
+	counts, err := discoverEvents(jfrFixture("multi.jfr"))
+	if err != nil {
+		t.Fatalf("discoverEvents: %v", err)
+	}
+	if len(counts) < 2 {
+		t.Errorf("expected >=2 event types in multi.jfr, got %d: %v", len(counts), counts)
+	}
+	for name, n := range counts {
+		if n <= 0 {
+			t.Errorf("event %q has %d samples, expected >0", name, n)
+		}
+	}
+}
+
+func TestJFRBranchMissesMapsToCPU(t *testing.T) {
+	counts, err := discoverEvents(jfrFixture("branch-misses.jfr"))
+	if err != nil {
+		t.Fatalf("discoverEvents: %v", err)
+	}
+	if _, ok := counts["cpu"]; !ok {
+		t.Errorf("expected 'cpu' event in branch-misses.jfr, got %v", counts)
+	}
+	if len(counts) != 1 {
+		t.Errorf("expected exactly 1 event type in branch-misses.jfr, got %v", counts)
+	}
+}
+
+func TestJFRInfoAutoSelectWall(t *testing.T) {
+	path := jfrFixture("wall.jfr")
+
+	// Parse with default "cpu" — should get 0 samples
+	sf, _, err := openInput(path, "cpu")
+	if err != nil {
+		t.Fatalf("openInput: %v", err)
+	}
+	if sf.totalSamples != 0 {
+		t.Fatalf("expected 0 cpu samples in wall.jfr, got %d", sf.totalSamples)
+	}
+
+	// Simulate auto-select: discover events, find best
+	eventCounts, err := discoverEvents(path)
+	if err != nil {
+		t.Fatalf("discoverEvents: %v", err)
+	}
+	eventType := "cpu"
+	if eventCounts[eventType] == 0 {
+		best, bestN := "", 0
+		for name, n := range eventCounts {
+			if n > bestN {
+				best, bestN = name, n
+			}
+		}
+		if best != "" {
+			eventType = best
+			sf, _, err = openInput(path, eventType)
+			if err != nil {
+				t.Fatalf("openInput with %s: %v", eventType, err)
+			}
+		}
+	}
+
+	if eventType != "wall" {
+		t.Errorf("expected auto-select to pick 'wall', got %q", eventType)
+	}
+
+	out := captureOutput(func() {
+		cmdInfo(sf, eventType, true, eventCounts, 0, 10, 20)
+	})
+	if !strings.Contains(out, "Event: wall") {
+		t.Errorf("expected 'Event: wall' in output, got:\n%s", out)
+	}
+	if !strings.Contains(out, "Total samples:") {
+		t.Errorf("expected 'Total samples:' in output, got:\n%s", out)
+	}
+	if strings.Contains(out, "Total samples: 0") {
+		t.Errorf("expected non-zero total samples, got:\n%s", out)
+	}
+}
+
+func TestJFRInfoAlsoAvailable(t *testing.T) {
+	path := jfrFixture("multi.jfr")
+	sf, _, err := openInput(path, "cpu")
+	if err != nil {
+		t.Fatalf("openInput: %v", err)
+	}
+	eventCounts, err := discoverEvents(path)
+	if err != nil {
+		t.Fatalf("discoverEvents: %v", err)
+	}
+
+	out := captureOutput(func() {
+		cmdInfo(sf, "cpu", true, eventCounts, 0, 10, 20)
+	})
+	if !strings.Contains(out, "Also available:") {
+		t.Errorf("expected 'Also available:' in output, got:\n%s", out)
+	}
+}
+
+func TestJFRHotCommand(t *testing.T) {
+	sf, _, err := openInput(jfrFixture("cpu.jfr"), "cpu")
+	if err != nil {
+		t.Fatalf("openInput: %v", err)
+	}
+	if sf.totalSamples == 0 {
+		t.Fatal("expected >0 samples")
+	}
+
+	out := captureOutput(func() {
+		cmdHot(sf, 10, false, 0)
+	})
+	if !strings.Contains(out, "SELF") {
+		t.Errorf("expected 'SELF' in hot output, got:\n%s", out)
+	}
+	if !strings.Contains(out, "TOTAL") {
+		t.Errorf("expected 'TOTAL' in hot output, got:\n%s", out)
+	}
+}
+
+func TestJFRTreeCommand(t *testing.T) {
+	sf, _, err := openInput(jfrFixture("cpu.jfr"), "cpu")
+	if err != nil {
+		t.Fatalf("openInput: %v", err)
+	}
+
+	out := captureOutput(func() {
+		cmdTree(sf, "Workload", 4, 1.0)
+	})
+	if !strings.Contains(out, "Workload") {
+		t.Errorf("expected 'Workload' in tree output, got:\n%s", out)
+	}
+}
+
+func TestJFRCallersCommand(t *testing.T) {
+	sf, _, err := openInput(jfrFixture("cpu.jfr"), "cpu")
+	if err != nil {
+		t.Fatalf("openInput: %v", err)
+	}
+
+	out := captureOutput(func() {
+		cmdCallers(sf, "computeStep", 4, 1.0)
+	})
+	if !strings.Contains(out, "computeStep") {
+		t.Errorf("expected 'computeStep' in callers output, got:\n%s", out)
+	}
+}
+
+func TestJFRThreadFilter(t *testing.T) {
+	sf, _, err := openInput(jfrFixture("cpu.jfr"), "cpu")
+	if err != nil {
+		t.Fatalf("openInput: %v", err)
+	}
+	totalBefore := sf.totalSamples
+
+	filtered := sf.filterByThread("cpu-worker")
+	if filtered.totalSamples == 0 {
+		t.Error("expected >0 samples after filtering to cpu-worker")
+	}
+	if filtered.totalSamples >= totalBefore {
+		t.Errorf("expected filtered samples (%d) < total (%d)", filtered.totalSamples, totalBefore)
+	}
+}
+
+func TestJFRLinesCommand(t *testing.T) {
+	sf, _, err := openInput(jfrFixture("cpu.jfr"), "cpu")
+	if err != nil {
+		t.Fatalf("openInput: %v", err)
+	}
+
+	// Should not crash; may or may not find line info depending on profiler config
+	err = cmdLines(sf, "computeStep", 0, false)
+	// err is acceptable (no line info) — we just verify it doesn't panic
+	_ = err
+}
+
+func TestJFRCollapseCommand(t *testing.T) {
+	sf, _, err := openInput(jfrFixture("cpu.jfr"), "cpu")
+	if err != nil {
+		t.Fatalf("openInput: %v", err)
+	}
+
+	out := captureOutput(func() {
+		cmdCollapse(sf)
+	})
+	if len(out) == 0 {
+		t.Error("expected non-empty collapsed output")
+	}
+	// Each line should have a space-separated count at the end
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.Split(line, " ")
+		if len(parts) < 2 {
+			t.Errorf("malformed collapsed line (no count): %q", line)
+			continue
+		}
+		countStr := parts[len(parts)-1]
+		if _, err := strconv.Atoi(countStr); err != nil {
+			t.Errorf("last field is not a number in collapsed line: %q", line)
+		}
+	}
+}
+
+func TestJFREventsCommand(t *testing.T) {
+	out := captureOutput(func() {
+		err := cmdEvents(jfrFixture("multi.jfr"))
+		if err != nil {
+			t.Fatalf("cmdEvents: %v", err)
+		}
+	})
+	if !strings.Contains(out, "cpu") {
+		t.Errorf("expected 'cpu' in events output, got:\n%s", out)
 	}
 }
