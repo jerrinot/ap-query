@@ -7,7 +7,7 @@
 // Input: .jfr/.jfr.gz files are parsed as JFR binary; all other files and
 // stdin (-) are parsed as collapsed text.
 //
-// Commands: hot, tree, callers, threads, filter, events, collapse, diff, lines, info
+// Commands: hot, tree, trace, callers, threads, filter, events, collapse, diff, lines, info
 package main
 
 import (
@@ -49,6 +49,7 @@ Commands:
   info      One-shot triage: events, threads, hot methods, and drill-down.
   hot       Rank methods by self-time and total-time.
   tree      Call tree descending from a method (optional -m; shows all if omitted).
+  trace     Hottest path from a method to leaf (-m required).
   callers   Callers ascending to a method (-m required).
   lines     Source-line breakdown inside a method (-m required).
   threads   Thread sample distribution.
@@ -68,7 +69,7 @@ Command-specific flags:
   -m METHOD, --method METHOD   Substring match against method names.
   --top N                      Limit output rows (default: 10 for hot; unlimited for diff, lines, threads).
   --depth N                    Max tree/callers depth (default: 4).
-  --min-pct F                  Hide tree/callers nodes below this %% (default: 1.0).
+  --min-pct F                  Hide tree/callers/trace nodes below this %% (default: 1.0; trace default: 0.5).
   --min-delta F                Hide diff entries below this %% change (default: 0.5).
   --fqn                        Show fully-qualified names instead of Class.method.
   --assert-below F             Exit 1 if top method self%% >= F (for CI gates).
@@ -81,6 +82,7 @@ Examples:
   ap-query info profile.jfr
   ap-query hot profile.jfr --event cpu --top 20
   ap-query tree profile.jfr -m HashMap.resize --depth 6
+  ap-query trace profile.jfr -m HashMap.resize --min-pct 0.5
   ap-query callers profile.jfr -m HashMap.resize
   ap-query lines profile.jfr -m HashMap.resize
   ap-query hot profile.jfr -t "http-nio" --assert-below 15.0
@@ -304,6 +306,16 @@ func main() {
 		depth := f.intVal([]string{"depth"}, 4)
 		minPct := f.floatVal([]string{"min-pct"}, 1.0)
 		cmdTree(sf, method, depth, minPct)
+
+	case "trace":
+		method := f.str("m", "method")
+		if method == "" {
+			fmt.Fprintln(os.Stderr, "error: -m/--method required")
+			os.Exit(2)
+		}
+		minPct := f.floatVal([]string{"min-pct"}, 0.5)
+		fqn := f.boolean("fqn")
+		cmdTrace(sf, method, minPct, fqn)
 
 	case "callers":
 		method := f.str("m", "method")

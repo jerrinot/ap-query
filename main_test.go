@@ -2873,3 +2873,671 @@ func TestJFRTreeNoMethodWithThreadFilter(t *testing.T) {
 		t.Errorf("expected 'cpuWork' and 'computeStep' in cpu-worker tree, got:\n%s", out)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Trace command tests
+// ---------------------------------------------------------------------------
+
+func TestCmdTraceBasicHotPath(t *testing.T) {
+	// Linear chain: A→B→C, no branching.
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "B.b", "C.c"}, lines: []uint32{0, 0, 0}, count: 100, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdTrace(sf, "A.a", 0.0, false)
+	})
+
+	if !strings.Contains(out, "A.a") {
+		t.Errorf("expected A.a in output, got:\n%s", out)
+	}
+	if !strings.Contains(out, "B.b") {
+		t.Errorf("expected B.b in output, got:\n%s", out)
+	}
+	if !strings.Contains(out, "C.c") {
+		t.Errorf("expected C.c in output, got:\n%s", out)
+	}
+	// No branching → no sibling annotations.
+	if strings.Contains(out, "sibling") {
+		t.Errorf("expected no sibling annotations for linear chain, got:\n%s", out)
+	}
+	// Should have leaf summary.
+	if !strings.Contains(out, "Hottest leaf: C.c") {
+		t.Errorf("expected leaf summary for C.c, got:\n%s", out)
+	}
+}
+
+func TestCmdTraceBranching(t *testing.T) {
+	// A→B(70) and A→C(30). Should pick B, annotate 1 sibling.
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "B.b"}, lines: []uint32{0, 0}, count: 70, thread: "main"},
+		{frames: []string{"A.a", "C.c"}, lines: []uint32{0, 0}, count: 30, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdTrace(sf, "A.a", 0.0, false)
+	})
+
+	if !strings.Contains(out, "A.a") {
+		t.Error("expected A.a")
+	}
+	if !strings.Contains(out, "B.b") {
+		t.Errorf("expected B.b (hottest child), got:\n%s", out)
+	}
+	if !strings.Contains(out, "+1 sibling") {
+		t.Errorf("expected '+1 sibling' annotation, got:\n%s", out)
+	}
+	if !strings.Contains(out, "C.c") {
+		t.Errorf("expected C.c in sibling annotation, got:\n%s", out)
+	}
+	if !strings.Contains(out, "Hottest leaf: B.b") {
+		t.Errorf("expected leaf summary for B.b, got:\n%s", out)
+	}
+}
+
+func TestCmdTraceBranchingMultipleSiblings(t *testing.T) {
+	// A→B(50), A→C(30), A→D(20). Should pick B, show +2 siblings, next=C.c
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "B.b"}, lines: []uint32{0, 0}, count: 50, thread: "main"},
+		{frames: []string{"A.a", "C.c"}, lines: []uint32{0, 0}, count: 30, thread: "main"},
+		{frames: []string{"A.a", "D.d"}, lines: []uint32{0, 0}, count: 20, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdTrace(sf, "A.a", 0.0, false)
+	})
+
+	if !strings.Contains(out, "+2 siblings") {
+		t.Errorf("expected '+2 siblings', got:\n%s", out)
+	}
+	if !strings.Contains(out, "next: 30.0% C.c") {
+		t.Errorf("expected 'next: 30.0%% C.c', got:\n%s", out)
+	}
+}
+
+func TestCmdTraceDeepChain(t *testing.T) {
+	// 12 frames deep. Verify no depth limit.
+	frames := []string{"A.a", "B.b", "C.c", "D.d", "E.e", "F.f", "G.g", "H.h", "I.i", "J.j", "K.k", "L.l"}
+	lines := make([]uint32, len(frames))
+	sf := makeStackFile([]stack{
+		{frames: frames, lines: lines, count: 100, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdTrace(sf, "A.a", 0.0, false)
+	})
+
+	for _, f := range frames {
+		short := shortName(f)
+		if !strings.Contains(out, short) {
+			t.Errorf("expected %s in deep trace output, got:\n%s", short, out)
+		}
+	}
+	if !strings.Contains(out, "Hottest leaf: L.l") {
+		t.Errorf("expected leaf summary for L.l, got:\n%s", out)
+	}
+}
+
+func TestCmdTraceSelfTimeAnnotation(t *testing.T) {
+	// Leaf should get ← self=X.X% annotation.
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "B.b"}, lines: []uint32{0, 0}, count: 100, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdTrace(sf, "A.a", 0.0, false)
+	})
+
+	if !strings.Contains(out, "← self=") {
+		t.Errorf("expected self-time annotation on leaf, got:\n%s", out)
+	}
+	if !strings.Contains(out, "← self=100.0%") {
+		t.Errorf("expected ← self=100.0%% on leaf B.b, got:\n%s", out)
+	}
+}
+
+func TestCmdTraceMinPct(t *testing.T) {
+	// A→B→C where C is only 1% of total. With min-pct=5, should stop at B.
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "B.b", "C.c"}, lines: []uint32{0, 0, 0}, count: 1, thread: "main"},
+		{frames: []string{"A.a", "B.b"}, lines: []uint32{0, 0}, count: 99, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdTrace(sf, "A.a", 5.0, false)
+	})
+
+	if !strings.Contains(out, "A.a") {
+		t.Error("expected A.a")
+	}
+	if !strings.Contains(out, "B.b") {
+		t.Error("expected B.b")
+	}
+	// C.c is 1% (1/100), below 5% threshold — trace should stop at B.b.
+	if strings.Contains(out, "C.c") {
+		t.Errorf("C.c should be filtered by min-pct, got:\n%s", out)
+	}
+	// Leaf should be B.b.
+	if !strings.Contains(out, "Hottest leaf: B.b") {
+		t.Errorf("expected leaf summary for B.b, got:\n%s", out)
+	}
+}
+
+func TestCmdTraceNoMatch(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "B.b"}, lines: []uint32{0, 0}, count: 10, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdTrace(sf, "Nonexistent", 0.0, false)
+	})
+
+	if !strings.Contains(out, "no frames matching") {
+		t.Errorf("expected 'no frames matching', got %q", out)
+	}
+}
+
+func TestCmdTraceEmpty(t *testing.T) {
+	sf := makeStackFile(nil)
+
+	out := captureOutput(func() {
+		cmdTrace(sf, "A.a", 0.0, false)
+	})
+
+	if strings.TrimSpace(out) != "" {
+		t.Errorf("expected empty output for empty stackFile, got %q", out)
+	}
+}
+
+func TestCmdTraceMultipleMatches(t *testing.T) {
+	// Two different methods match "run": Foo.run and Bar.run.
+	sf := makeStackFile([]stack{
+		{frames: []string{"com.a.Foo.run", "X.x"}, lines: []uint32{0, 0}, count: 60, thread: "main"},
+		{frames: []string{"com.b.Bar.run", "Y.y"}, lines: []uint32{0, 0}, count: 40, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdTrace(sf, "run", 0.0, false)
+	})
+
+	if !strings.Contains(out, "matched 2 methods") {
+		t.Errorf("expected 'matched 2 methods', got:\n%s", out)
+	}
+	// Both should be traced.
+	if !strings.Contains(out, "Foo.run") {
+		t.Errorf("expected Foo.run, got:\n%s", out)
+	}
+	if !strings.Contains(out, "Bar.run") {
+		t.Errorf("expected Bar.run, got:\n%s", out)
+	}
+	// Each should have a leaf summary.
+	leafCount := strings.Count(out, "Hottest leaf:")
+	if leafCount != 2 {
+		t.Errorf("expected 2 'Hottest leaf:' lines, got %d in:\n%s", leafCount, out)
+	}
+}
+
+func TestCmdTraceSingleFrameMethod(t *testing.T) {
+	// Matched method is the only frame (leaf already).
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a"}, lines: []uint32{0}, count: 100, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdTrace(sf, "A.a", 0.0, false)
+	})
+
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	// Should have exactly 2 lines: the trace line and the leaf summary.
+	if len(lines) != 2 {
+		t.Errorf("expected 2 lines (trace + leaf summary), got %d:\n%s", len(lines), out)
+	}
+	if !strings.Contains(out, "[100.0%] A.a") {
+		t.Errorf("expected [100.0%%] A.a, got:\n%s", out)
+	}
+	if !strings.Contains(out, "Hottest leaf: A.a") {
+		t.Errorf("expected leaf summary for A.a, got:\n%s", out)
+	}
+}
+
+func TestCmdTraceEqualChildren(t *testing.T) {
+	// Two children with identical sample counts → deterministic pick (lexicographic).
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "Z.z"}, lines: []uint32{0, 0}, count: 50, thread: "main"},
+		{frames: []string{"A.a", "B.b"}, lines: []uint32{0, 0}, count: 50, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdTrace(sf, "A.a", 0.0, false)
+	})
+
+	// B.b < Z.z lexicographically, so B.b should be chosen.
+	if !strings.Contains(out, "Hottest leaf: B.b") {
+		t.Errorf("expected B.b chosen (lexicographic tiebreak), got:\n%s", out)
+	}
+	// Z.z should appear in sibling annotation.
+	if !strings.Contains(out, "+1 sibling") {
+		t.Errorf("expected '+1 sibling', got:\n%s", out)
+	}
+	if !strings.Contains(out, "Z.z") {
+		t.Errorf("expected Z.z in sibling annotation, got:\n%s", out)
+	}
+}
+
+func TestCmdTraceMinPctZero(t *testing.T) {
+	// min-pct=0 should trace all the way down even for tiny branches.
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "B.b", "C.c"}, lines: []uint32{0, 0, 0}, count: 1, thread: "main"},
+		{frames: []string{"X.x"}, lines: []uint32{0}, count: 999, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdTrace(sf, "A.a", 0.0, false)
+	})
+
+	// Even though A.a is 0.1%, min-pct=0 should show everything.
+	if !strings.Contains(out, "C.c") {
+		t.Errorf("expected C.c with min-pct=0, got:\n%s", out)
+	}
+	if !strings.Contains(out, "Hottest leaf: C.c") {
+		t.Errorf("expected leaf summary for C.c, got:\n%s", out)
+	}
+}
+
+func TestCmdTraceMinPctHighCutsEarly(t *testing.T) {
+	// High min-pct should cut off early.
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "B.b", "C.c"}, lines: []uint32{0, 0, 0}, count: 10, thread: "main"},
+		{frames: []string{"A.a", "B.b"}, lines: []uint32{0, 0}, count: 40, thread: "main"},
+		{frames: []string{"X.x"}, lines: []uint32{0}, count: 50, thread: "main"},
+	})
+
+	// A.a=50%, B.b=50%, C.c=10%. With min-pct=20%, C.c is filtered.
+	out := captureOutput(func() {
+		cmdTrace(sf, "A.a", 20.0, false)
+	})
+
+	if !strings.Contains(out, "A.a") {
+		t.Error("expected A.a")
+	}
+	if !strings.Contains(out, "B.b") {
+		t.Error("expected B.b")
+	}
+	if strings.Contains(out, "C.c") {
+		t.Errorf("C.c should be cut off by min-pct=20, got:\n%s", out)
+	}
+}
+
+func TestCmdTraceFQN(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"com/example/App.process", "com/example/Worker.run"}, lines: []uint32{0, 0}, count: 100, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdTrace(sf, "App.process", 0.0, true)
+	})
+
+	if !strings.Contains(out, "com.example.App.process") {
+		t.Errorf("expected FQN 'com.example.App.process', got:\n%s", out)
+	}
+	if !strings.Contains(out, "com.example.Worker.run") {
+		t.Errorf("expected FQN 'com.example.Worker.run', got:\n%s", out)
+	}
+}
+
+func TestCmdTracePercentageCorrectness(t *testing.T) {
+	// Verify percentages are relative to totalSamples, not parent.
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "B.b", "C.c"}, lines: []uint32{0, 0, 0}, count: 30, thread: "main"},
+		{frames: []string{"A.a", "B.b"}, lines: []uint32{0, 0}, count: 20, thread: "main"},
+		{frames: []string{"X.x"}, lines: []uint32{0}, count: 50, thread: "main"},
+	})
+	// totalSamples=100, A.a=50%, B.b=50%, C.c=30%
+
+	out := captureOutput(func() {
+		cmdTrace(sf, "A.a", 0.0, false)
+	})
+
+	if !strings.Contains(out, "[50.0%] A.a") {
+		t.Errorf("expected [50.0%%] A.a, got:\n%s", out)
+	}
+	if !strings.Contains(out, "[50.0%] B.b") {
+		t.Errorf("expected [50.0%%] B.b, got:\n%s", out)
+	}
+	if !strings.Contains(out, "[30.0%] C.c") {
+		t.Errorf("expected [30.0%%] C.c, got:\n%s", out)
+	}
+}
+
+func TestCmdTraceSelfTimeOnlyOnLeaf(t *testing.T) {
+	// Self-time annotation should only appear on the last node.
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "B.b", "C.c"}, lines: []uint32{0, 0, 0}, count: 100, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdTrace(sf, "A.a", 0.0, false)
+	})
+
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	selfCount := 0
+	for _, line := range lines {
+		if strings.Contains(line, "← self=") {
+			selfCount++
+		}
+	}
+	if selfCount != 1 {
+		t.Errorf("expected exactly 1 self-time annotation (on leaf), got %d in:\n%s", selfCount, out)
+	}
+	// The self-time annotation should be on the C.c line.
+	for _, line := range lines {
+		if strings.Contains(line, "C.c") && strings.Contains(line, "← self=") {
+			return // pass
+		}
+	}
+	t.Errorf("expected self-time annotation on C.c line, got:\n%s", out)
+}
+
+func TestCmdTraceSelfTimeBelowMinPctHidden(t *testing.T) {
+	// Self-time annotation should be hidden when self-pct < min-pct.
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "B.b"}, lines: []uint32{0, 0}, count: 1, thread: "main"},
+		{frames: []string{"A.a"}, lines: []uint32{0}, count: 99, thread: "main"},
+	})
+	// B.b self=1%, A.a self=99%.
+
+	out := captureOutput(func() {
+		cmdTrace(sf, "A.a", 0.0, false)
+	})
+
+	// B.b is 1% self. With min-pct=0 it still appears in the trace,
+	// but at the leaf it should show self annotation since 1% >= 0%.
+	if !strings.Contains(out, "← self=1.0%") {
+		t.Errorf("expected ← self=1.0%% on leaf B.b with min-pct=0, got:\n%s", out)
+	}
+
+	// Now with high min-pct: trace A.a with min-pct=5. B.b is 1% so it's
+	// filtered out as a child. A.a itself is the leaf.
+	out2 := captureOutput(func() {
+		cmdTrace(sf, "A.a", 5.0, false)
+	})
+
+	// A.a should be the leaf with self=99%.
+	if !strings.Contains(out2, "Hottest leaf: A.a") {
+		t.Errorf("expected A.a as leaf, got:\n%s", out2)
+	}
+	if !strings.Contains(out2, "← self=99.0%") {
+		t.Errorf("expected ← self=99.0%%, got:\n%s", out2)
+	}
+}
+
+func TestCmdTraceNoSiblingAnnotationWhenSingle(t *testing.T) {
+	// No sibling annotation when there's exactly one child.
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "B.b", "C.c"}, lines: []uint32{0, 0, 0}, count: 100, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdTrace(sf, "A.a", 0.0, false)
+	})
+
+	if strings.Contains(out, "sibling") {
+		t.Errorf("expected no sibling annotations for single-child chain, got:\n%s", out)
+	}
+}
+
+func TestCmdTraceSiblingsBelowMinPctNotCounted(t *testing.T) {
+	// Siblings below min-pct should not appear in the annotation.
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "B.b"}, lines: []uint32{0, 0}, count: 90, thread: "main"},
+		{frames: []string{"A.a", "C.c"}, lines: []uint32{0, 0}, count: 1, thread: "main"},
+		{frames: []string{"X.x"}, lines: []uint32{0}, count: 9, thread: "main"},
+	})
+	// totalSamples=100, B.b=90%, C.c=1%.
+	// With min-pct=5, C.c is below threshold → not counted as sibling.
+
+	out := captureOutput(func() {
+		cmdTrace(sf, "A.a", 5.0, false)
+	})
+
+	if strings.Contains(out, "sibling") {
+		t.Errorf("expected no sibling annotation (C.c below min-pct), got:\n%s", out)
+	}
+}
+
+func TestCmdTraceMatchAtLeaf(t *testing.T) {
+	// Matched method is already the leaf in all stacks.
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "B.b"}, lines: []uint32{0, 0}, count: 50, thread: "main"},
+		{frames: []string{"C.c", "B.b"}, lines: []uint32{0, 0}, count: 50, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdTrace(sf, "B.b", 0.0, false)
+	})
+
+	// B.b is the leaf in all stacks, so it should be a single-node trace.
+	if !strings.Contains(out, "Hottest leaf: B.b") {
+		t.Errorf("expected leaf summary for B.b, got:\n%s", out)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	// Should be 2 lines: [pct%] B.b (with self annotation) + leaf summary.
+	if len(lines) != 2 {
+		t.Errorf("expected 2 lines for match-at-leaf, got %d:\n%s", len(lines), out)
+	}
+}
+
+func TestCmdTraceMultipleRootsWithDifferentDepths(t *testing.T) {
+	// Method appears at different depths in different stacks.
+	sf := makeStackFile([]stack{
+		{frames: []string{"X.x", "A.a", "B.b", "C.c"}, lines: []uint32{0, 0, 0, 0}, count: 60, thread: "main"},
+		{frames: []string{"Y.y", "A.a", "D.d"}, lines: []uint32{0, 0, 0}, count: 40, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdTrace(sf, "A.a", 0.0, false)
+	})
+
+	if !strings.Contains(out, "A.a") {
+		t.Error("expected A.a")
+	}
+	// A.a=100%, children: B.b=60%, D.d=40%. Should pick B.b.
+	if !strings.Contains(out, "B.b") {
+		t.Errorf("expected B.b (hottest child), got:\n%s", out)
+	}
+	if !strings.Contains(out, "+1 sibling") {
+		t.Errorf("expected sibling annotation for D.d, got:\n%s", out)
+	}
+}
+
+func TestCmdTraceBranchingSiblingAnnotationFormat(t *testing.T) {
+	// Verify exact format of sibling annotation string.
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "B.b"}, lines: []uint32{0, 0}, count: 70, thread: "main"},
+		{frames: []string{"A.a", "C.c"}, lines: []uint32{0, 0}, count: 30, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdTrace(sf, "A.a", 0.0, false)
+	})
+
+	// The B.b line should contain exactly: (+1 sibling, next: 30.0% C.c)
+	expected := "(+1 sibling, next: 30.0% C.c)"
+	if !strings.Contains(out, expected) {
+		t.Errorf("expected annotation %q, got:\n%s", expected, out)
+	}
+}
+
+func TestCmdTraceLeafSummary(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "B.b", "C.c"}, lines: []uint32{0, 0, 0}, count: 80, thread: "main"},
+		{frames: []string{"X.x"}, lines: []uint32{0}, count: 20, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdTrace(sf, "A.a", 0.0, false)
+	})
+
+	// C.c self=80/100=80.0%
+	if !strings.Contains(out, "Hottest leaf: C.c (self=80.0%)") {
+		t.Errorf("expected 'Hottest leaf: C.c (self=80.0%%)', got:\n%s", out)
+	}
+}
+
+func TestCmdTraceLeafSummaryMultipleRoots(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"com.a.Foo.run", "X.x"}, lines: []uint32{0, 0}, count: 60, thread: "main"},
+		{frames: []string{"com.b.Bar.run", "Y.y"}, lines: []uint32{0, 0}, count: 40, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdTrace(sf, "run", 0.0, false)
+	})
+
+	if !strings.Contains(out, "Hottest leaf: X.x") {
+		t.Errorf("expected leaf summary for X.x, got:\n%s", out)
+	}
+	if !strings.Contains(out, "Hottest leaf: Y.y") {
+		t.Errorf("expected leaf summary for Y.y, got:\n%s", out)
+	}
+}
+
+func TestCmdTraceLeafSummaryMatchAtLeaf(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a"}, lines: []uint32{0}, count: 100, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdTrace(sf, "A.a", 0.0, false)
+	})
+
+	if !strings.Contains(out, "Hottest leaf: A.a (self=100.0%)") {
+		t.Errorf("expected 'Hottest leaf: A.a (self=100.0%%)', got:\n%s", out)
+	}
+}
+
+func TestCmdTraceLeafSummaryNoSelfTime(t *testing.T) {
+	// B.b is never a leaf frame, so it has 0 self-samples.
+	// With min-pct=6, C.c (5%) and D.d (5%) are below threshold,
+	// making B.b the trace leaf with self=0.0%.
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "B.b", "C.c"}, lines: []uint32{0, 0, 0}, count: 5, thread: "main"},
+		{frames: []string{"A.a", "B.b", "D.d"}, lines: []uint32{0, 0, 0}, count: 5, thread: "main"},
+		{frames: []string{"X.x"}, lines: []uint32{0}, count: 90, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdTrace(sf, "A.a", 6.0, false)
+	})
+
+	if !strings.Contains(out, "Hottest leaf: B.b (self=0.0%)") {
+		t.Errorf("expected 'Hottest leaf: B.b (self=0.0%%)', got:\n%s", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// JFR integration tests for trace
+// ---------------------------------------------------------------------------
+
+func TestJFRTraceCommand(t *testing.T) {
+	sf, _, err := openInput(jfrFixture("cpu.jfr"), "cpu")
+	if err != nil {
+		t.Fatalf("openInput: %v", err)
+	}
+
+	out := captureOutput(func() {
+		cmdTrace(sf, "Workload", 1.0, false)
+	})
+
+	// Should produce output with Workload methods.
+	if !strings.Contains(out, "Workload") {
+		t.Errorf("expected 'Workload' in trace output, got:\n%s", out)
+	}
+	// Should have leaf summary.
+	if !strings.Contains(out, "Hottest leaf:") {
+		t.Errorf("expected 'Hottest leaf:' in output, got:\n%s", out)
+	}
+	// Should have at least 2 lines (trace + leaf summary).
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) < 2 {
+		t.Errorf("expected at least 2 output lines, got %d:\n%s", len(lines), out)
+	}
+}
+
+func TestJFRTraceWithThreadFilter(t *testing.T) {
+	sf, _, err := openInput(jfrFixture("cpu.jfr"), "cpu")
+	if err != nil {
+		t.Fatalf("openInput: %v", err)
+	}
+
+	filtered := sf.filterByThread("cpu-worker")
+
+	out := captureOutput(func() {
+		cmdTrace(filtered, "Workload", 1.0, false)
+	})
+
+	if !strings.Contains(out, "Workload") {
+		t.Errorf("expected 'Workload' in filtered trace, got:\n%s", out)
+	}
+	if !strings.Contains(out, "Hottest leaf:") {
+		t.Errorf("expected leaf summary in filtered trace, got:\n%s", out)
+	}
+}
+
+func TestJFRTraceWallEvent(t *testing.T) {
+	sf, _, err := openInput(jfrFixture("wall.jfr"), "wall")
+	if err != nil {
+		t.Fatalf("openInput: %v", err)
+	}
+
+	if sf.totalSamples == 0 {
+		t.Skip("wall.jfr has no wall samples")
+	}
+
+	out := captureOutput(func() {
+		cmdTrace(sf, "Workload", 0.5, false)
+	})
+
+	// Wall event should have some Workload samples.
+	if !strings.Contains(out, "Workload") {
+		t.Errorf("expected 'Workload' in wall trace, got:\n%s", out)
+	}
+	if !strings.Contains(out, "Hottest leaf:") {
+		t.Errorf("expected leaf summary, got:\n%s", out)
+	}
+}
+
+func TestJFRTraceMultiEventFile(t *testing.T) {
+	// multi.jfr contains cpu + wall + alloc + lock events.
+	// Trace with different event types should produce different results.
+	cpuSF, _, err := openInput(jfrFixture("multi.jfr"), "cpu")
+	if err != nil {
+		t.Fatalf("openInput cpu: %v", err)
+	}
+	wallSF, _, err := openInput(jfrFixture("multi.jfr"), "wall")
+	if err != nil {
+		t.Fatalf("openInput wall: %v", err)
+	}
+
+	cpuOut := captureOutput(func() {
+		cmdTrace(cpuSF, "Workload", 0.5, false)
+	})
+	wallOut := captureOutput(func() {
+		cmdTrace(wallSF, "Workload", 0.5, false)
+	})
+
+	// Both should have output.
+	if !strings.Contains(cpuOut, "Hottest leaf:") {
+		t.Errorf("expected leaf summary for cpu trace, got:\n%s", cpuOut)
+	}
+	if !strings.Contains(wallOut, "Hottest leaf:") {
+		t.Errorf("expected leaf summary for wall trace, got:\n%s", wallOut)
+	}
+
+	// CPU and wall should typically produce different traces since
+	// the workload has cpu-intensive and sleep-intensive threads.
+	// At minimum, both should have some output.
+	if len(cpuOut) == 0 || len(wallOut) == 0 {
+		t.Error("expected non-empty output for both event types")
+	}
+}
