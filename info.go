@@ -2,32 +2,14 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"sort"
+	"strings"
 )
 
-func cmdInfo(path string, sf *stackFile, eventType string, isJFR bool, expand, topThreads, topMethods int) {
-	// === EVENTS === (JFR only)
-	if isJFR {
-		counts, err := discoverEvents(path)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not read events: %v\n", err)
-		} else if len(counts) > 0 {
-			fmt.Println("=== EVENTS ===")
-			type evEntry struct {
-				name    string
-				samples int
-			}
-			var evs []evEntry
-			for n, c := range counts {
-				evs = append(evs, evEntry{n, c})
-			}
-			sort.Slice(evs, func(i, j int) bool { return evs[i].samples > evs[j].samples })
-			for _, e := range evs {
-				fmt.Printf("%-10s %9d\n", e.name, e.samples)
-			}
-			fmt.Println()
-		}
+func cmdInfo(sf *stackFile, eventType string, isJFR bool, eventCounts map[string]int, expand, topThreads, topMethods int) {
+	// === Selected event ===
+	if isJFR && len(eventCounts) > 0 {
+		fmt.Printf("Event: %s\n\n", eventType)
 	}
 
 	// === THREADS ===
@@ -71,6 +53,20 @@ func cmdInfo(path string, sf *stackFile, eventType string, isJFR bool, expand, t
 					fmt.Printf("%s:%-8d %8d %6.1f%%\n", le.name, le.line, le.samples, pct)
 				}
 			}
+		}
+	}
+
+	// === Other available events ===
+	if isJFR && len(eventCounts) > 1 {
+		var others []string
+		for name, count := range eventCounts {
+			if name != eventType {
+				others = append(others, fmt.Sprintf("%s (%d events)", name, count))
+			}
+		}
+		if len(others) > 0 {
+			sort.Strings(others)
+			fmt.Printf("\nAlso available: %s\n", strings.Join(others, ", "))
 		}
 	}
 }

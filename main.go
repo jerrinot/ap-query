@@ -217,6 +217,7 @@ func main() {
 		return
 	}
 
+	eventExplicit := f.str("event", "e") != ""
 	eventType := f.str("event", "e")
 	if eventType == "" {
 		eventType = "cpu"
@@ -351,7 +352,31 @@ func main() {
 		expand := f.intVal([]string{"expand"}, 3)
 		topThreads := f.intVal([]string{"top-threads"}, 10)
 		topMethods := f.intVal([]string{"top-methods"}, 20)
-		cmdInfo(path, sf, eventType, isJFR, expand, topThreads, topMethods)
+		var eventCounts map[string]int
+		if isJFR {
+			eventCounts, _ = discoverEvents(path)
+			if !eventExplicit && len(eventCounts) > 0 && eventCounts[eventType] == 0 {
+				// Default event type has no samples; pick the dominant one.
+				best, bestN := "", 0
+				for name, n := range eventCounts {
+					if n > bestN {
+						best, bestN = name, n
+					}
+				}
+				if best != "" && best != eventType {
+					eventType = best
+					sf, _, err = openInput(path, eventType)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "error: %v\n", err)
+						os.Exit(1)
+					}
+					if thread != "" {
+						sf = sf.filterByThread(thread)
+					}
+				}
+			}
+		}
+		cmdInfo(sf, eventType, isJFR, eventCounts, expand, topThreads, topMethods)
 
 	default:
 		usage()

@@ -410,11 +410,8 @@ func TestCmdInfo(t *testing.T) {
 		{frames: []string{"C.c"}, lines: []uint32{0}, count: 5, thread: "worker"},
 	})
 
-	// cmdInfo calls discoverEvents which needs a real file; passing a
-	// non-existent path triggers a warning on stderr but still lets us
-	// test the threads and hot methods sections.
 	out := captureOutput(func() {
-		cmdInfo("/nonexistent.jfr", sf, "cpu", true, 0, 5, 10)
+		cmdInfo(sf, "cpu", true, map[string]int{"cpu": 15}, 0, 5, 10)
 	})
 
 	if !strings.Contains(out, "=== THREADS (top") {
@@ -432,6 +429,32 @@ func TestCmdInfo(t *testing.T) {
 	if !strings.Contains(out, "Total samples: 15") {
 		t.Errorf("expected 'Total samples: 15', got %q", out)
 	}
+	if !strings.Contains(out, "Event: cpu") {
+		t.Error("expected 'Event: cpu' header")
+	}
+}
+
+func TestCmdInfoAlsoAvailable(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a"}, lines: []uint32{0}, count: 10, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdInfo(sf, "wall", true, map[string]int{"wall": 10, "cpu": 200, "alloc": 50}, 0, 5, 10)
+	})
+
+	if !strings.Contains(out, "Event: wall") {
+		t.Error("expected 'Event: wall' header")
+	}
+	if !strings.Contains(out, "Also available:") {
+		t.Error("expected 'Also available' footer")
+	}
+	if !strings.Contains(out, "cpu (200 events)") {
+		t.Errorf("expected cpu count in footer, got %q", out)
+	}
+	if !strings.Contains(out, "alloc (50 events)") {
+		t.Errorf("expected alloc count in footer, got %q", out)
+	}
 }
 
 func TestCmdInfoExpand(t *testing.T) {
@@ -442,7 +465,7 @@ func TestCmdInfoExpand(t *testing.T) {
 	})
 
 	out := captureOutput(func() {
-		cmdInfo("fake.txt", sf, "cpu", false, 2, 10, 20)
+		cmdInfo(sf, "cpu", false, nil, 2, 10, 20)
 	})
 
 	// Should have drill-down sections for top 2 methods (C.c and B.b)
@@ -472,7 +495,7 @@ func TestCmdInfoExpandZero(t *testing.T) {
 	})
 
 	out := captureOutput(func() {
-		cmdInfo("fake.txt", sf, "cpu", false, 0, 10, 20)
+		cmdInfo(sf, "cpu", false, nil, 0, 10, 20)
 	})
 
 	if strings.Contains(out, "DRILL-DOWN") {
@@ -487,7 +510,7 @@ func TestCmdInfoExpandNoLineInfo(t *testing.T) {
 	})
 
 	out := captureOutput(func() {
-		cmdInfo("fake.txt", sf, "cpu", false, 2, 10, 20)
+		cmdInfo(sf, "cpu", false, nil, 2, 10, 20)
 	})
 
 	// Drill-down should appear but without lines section
@@ -2198,7 +2221,7 @@ func TestCmdInfoNoThreads(t *testing.T) {
 	})
 
 	out := captureOutput(func() {
-		cmdInfo("fake.txt", sf, "cpu", false, 0, 10, 20)
+		cmdInfo(sf, "cpu", false, nil, 0, 10, 20)
 	})
 
 	// Should NOT have THREADS section since no thread info
