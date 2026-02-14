@@ -3417,34 +3417,17 @@ func TestCmdTraceLeafSummaryMatchAtLeaf(t *testing.T) {
 }
 
 func TestCmdTraceLeafSummaryNoSelfTime(t *testing.T) {
-	// Leaf with 0 self-time: method has children but all are below min-pct.
+	// B.b is never a leaf frame, so it has 0 self-samples.
+	// With min-pct=6, C.c (5%) and D.d (5%) are below threshold,
+	// making B.b the trace leaf with self=0.0%.
 	sf := makeStackFile([]stack{
-		{frames: []string{"A.a", "B.b", "C.c"}, lines: []uint32{0, 0, 0}, count: 1, thread: "main"},
-		{frames: []string{"A.a", "B.b"}, lines: []uint32{0, 0}, count: 99, thread: "main"},
-	})
-	// B.b is the leaf of the trace (C.c below min-pct at 50%). B.b self=99/100=99%.
-	// But let's construct a case where the leaf truly has 0 self:
-	sf2 := makeStackFile([]stack{
-		{frames: []string{"A.a", "B.b", "C.c"}, lines: []uint32{0, 0, 0}, count: 100, thread: "main"},
-	})
-	// Trace with min-pct=50. C.c=100% so it passes. But B.b has 0 self.
-	// Actually, the trace follows to C.c. Let me make a case where the trace
-	// leaf has 0 self: that happens when the trace is cut off by min-pct
-	// at a node that is never itself a leaf frame.
-	sf3 := makeStackFile([]stack{
 		{frames: []string{"A.a", "B.b", "C.c"}, lines: []uint32{0, 0, 0}, count: 5, thread: "main"},
 		{frames: []string{"A.a", "B.b", "D.d"}, lines: []uint32{0, 0, 0}, count: 5, thread: "main"},
 		{frames: []string{"X.x"}, lines: []uint32{0}, count: 90, thread: "main"},
 	})
-	// totalSamples=100, A.a=10%, B.b=10%, C.c=5%, D.d=5%.
-	// With min-pct=6: A.a=10% passes, B.b=10% passes, but C.c and D.d are 5% (below 6%).
-	// B.b becomes the leaf of the trace. B.b has 0 self-samples (never a leaf frame).
-
-	_ = sf
-	_ = sf2
 
 	out := captureOutput(func() {
-		cmdTrace(sf3, "A.a", 6.0, false)
+		cmdTrace(sf, "A.a", 6.0, false)
 	})
 
 	if !strings.Contains(out, "Hottest leaf: B.b (self=0.0%)") {
