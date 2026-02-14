@@ -48,7 +48,7 @@ Input auto-detection:
 Commands:
   info      One-shot triage: events, threads, hot methods, and drill-down.
   hot       Rank methods by self-time and total-time.
-  tree      Call tree descending from a method (-m required).
+  tree      Call tree descending from a method (optional -m; shows all if omitted).
   callers   Callers ascending to a method (-m required).
   lines     Source-line breakdown inside a method (-m required).
   threads   Thread sample distribution.
@@ -301,10 +301,6 @@ func main() {
 
 	case "tree":
 		method := f.str("m", "method")
-		if method == "" {
-			fmt.Fprintln(os.Stderr, "error: -m/--method required")
-			os.Exit(2)
-		}
 		depth := f.intVal([]string{"depth"}, 4)
 		minPct := f.floatVal([]string{"min-pct"}, 1.0)
 		cmdTree(sf, method, depth, minPct)

@@ -2692,3 +2692,184 @@ func TestJFREventsCommand(t *testing.T) {
 		t.Errorf("expected 'cpu' in events output, got:\n%s", out)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// TestCmdTreeNoMethod - tree command without -m parameter
+// ---------------------------------------------------------------------------
+
+func TestCmdTreeNoMethod(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.main", "B.process", "C.work"}, lines: []uint32{0, 0, 0}, count: 50, thread: "main"},
+		{frames: []string{"A.main", "B.process", "D.other"}, lines: []uint32{0, 0, 0}, count: 30, thread: "main"},
+		{frames: []string{"A.main", "E.helper"}, lines: []uint32{0, 0}, count: 20, thread: "worker"},
+	})
+
+	out := captureOutput(func() {
+		cmdTree(sf, "", 4, 1.0) // empty method means show all from root
+	})
+
+	// Should show tree starting from root
+	if !strings.Contains(out, "A.main") {
+		t.Errorf("expected 'A.main' (root) in tree output, got:\n%s", out)
+	}
+	if !strings.Contains(out, "B.process") {
+		t.Errorf("expected 'B.process' in tree output, got:\n%s", out)
+	}
+	if !strings.Contains(out, "C.work") {
+		t.Errorf("expected 'C.work' in tree output, got:\n%s", out)
+	}
+	if !strings.Contains(out, "E.helper") {
+		t.Errorf("expected 'E.helper' in tree output, got:\n%s", out)
+	}
+
+	// Should NOT show the "no frames matching" message
+	if strings.Contains(out, "no frames matching") {
+		t.Errorf("should not show 'no frames matching' when method is empty, got:\n%s", out)
+	}
+}
+
+func TestCmdTreeNoMethodWithThreadFilter(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"Thread.run", "Worker.execute", "Task.process"}, lines: []uint32{0, 0, 0}, count: 60, thread: "worker-1"},
+		{frames: []string{"Thread.run", "Worker.execute", "Task.compute"}, lines: []uint32{0, 0, 0}, count: 40, thread: "worker-1"},
+		{frames: []string{"Thread.run", "Main.start"}, lines: []uint32{0, 0}, count: 50, thread: "main"},
+	})
+
+	// Filter by thread first
+	filtered := sf.filterByThread("worker-1")
+
+	out := captureOutput(func() {
+		cmdTree(filtered, "", 5, 1.0)
+	})
+
+	// Should show tree for worker-1 thread only
+	if !strings.Contains(out, "Thread.run") {
+		t.Errorf("expected 'Thread.run' in output, got:\n%s", out)
+	}
+	if !strings.Contains(out, "Worker.execute") {
+		t.Errorf("expected 'Worker.execute' in output, got:\n%s", out)
+	}
+	if !strings.Contains(out, "Task.process") {
+		t.Errorf("expected 'Task.process' in output, got:\n%s", out)
+	}
+
+	// Should NOT show Main.start from main thread
+	if strings.Contains(out, "Main.start") {
+		t.Errorf("should not show 'Main.start' (filtered out), got:\n%s", out)
+	}
+}
+
+func TestCmdTreeNoMethodEmpty(t *testing.T) {
+	sf := makeStackFile(nil)
+
+	out := captureOutput(func() {
+		cmdTree(sf, "", 4, 1.0)
+	})
+
+	// Empty stackfile should produce no output
+	if strings.TrimSpace(out) != "" {
+		t.Errorf("expected empty output for empty stackfile, got %q", out)
+	}
+}
+
+func TestCmdTreeNoMethodMinPct(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.main", "B.hot"}, lines: []uint32{0, 0}, count: 95, thread: "main"},
+		{frames: []string{"A.main", "C.cold"}, lines: []uint32{0, 0}, count: 5, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdTree(sf, "", 4, 10.0) // 10% threshold
+	})
+
+	// A.main is 100%, B.hot is 95% - should show both
+	if !strings.Contains(out, "A.main") {
+		t.Errorf("expected 'A.main' in output, got:\n%s", out)
+	}
+	if !strings.Contains(out, "B.hot") {
+		t.Errorf("expected 'B.hot' (95%%) in output, got:\n%s", out)
+	}
+
+	// C.cold is only 5%, below 10% threshold - should not show
+	if strings.Contains(out, "C.cold") {
+		t.Errorf("should not show 'C.cold' (5%%, below 10%% threshold), got:\n%s", out)
+	}
+}
+
+func TestCmdTreeNoMethodMaxDepth(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "B.b", "C.c", "D.d", "E.e"}, lines: []uint32{0, 0, 0, 0, 0}, count: 100, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdTree(sf, "", 3, 0.0) // max depth 3
+	})
+
+	// Should show up to depth 3
+	if !strings.Contains(out, "A.a") {
+		t.Error("expected A.a at depth 1")
+	}
+	if !strings.Contains(out, "B.b") {
+		t.Error("expected B.b at depth 2")
+	}
+	if !strings.Contains(out, "C.c") {
+		t.Error("expected C.c at depth 3")
+	}
+
+	// Should NOT show beyond depth 3
+	if strings.Contains(out, "D.d") {
+		t.Error("D.d should be cut off at maxDepth=3")
+	}
+	if strings.Contains(out, "E.e") {
+		t.Error("E.e should be cut off at maxDepth=3")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestJFRTreeNoMethod - JFR integration test
+// ---------------------------------------------------------------------------
+
+func TestJFRTreeNoMethod(t *testing.T) {
+	sf, _, err := openInput(jfrFixture("cpu.jfr"), "cpu")
+	if err != nil {
+		t.Fatalf("openInput: %v", err)
+	}
+
+	out := captureOutput(func() {
+		cmdTree(sf, "", 4, 5.0)
+	})
+
+	// Should show root-level methods (Thread.run is the common root)
+	if !strings.Contains(out, "Thread.run") {
+		t.Errorf("expected 'Thread.run' in tree output, got:\n%s", out)
+	}
+
+	// Should show some workload methods
+	if !strings.Contains(out, "Workload") {
+		t.Errorf("expected 'Workload' somewhere in tree, got:\n%s", out)
+	}
+}
+
+func TestJFRTreeNoMethodWithThreadFilter(t *testing.T) {
+	sf, _, err := openInput(jfrFixture("cpu.jfr"), "cpu")
+	if err != nil {
+		t.Fatalf("openInput: %v", err)
+	}
+
+	// Filter to cpu-worker thread
+	filtered := sf.filterByThread("cpu-worker")
+
+	out := captureOutput(func() {
+		cmdTree(filtered, "", 5, 1.0)
+	})
+
+	// Should show thread-specific call tree
+	if !strings.Contains(out, "Thread.run") {
+		t.Errorf("expected 'Thread.run' in filtered tree, got:\n%s", out)
+	}
+
+	// Should show cpu-specific work
+	if !strings.Contains(out, "cpuWork") || !strings.Contains(out, "computeStep") {
+		t.Errorf("expected 'cpuWork' and 'computeStep' in cpu-worker tree, got:\n%s", out)
+	}
+}

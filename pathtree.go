@@ -14,6 +14,40 @@ type pathTree struct {
 	totalSamples int
 }
 
+// aggregateFromRoot builds a path tree starting from the root of all stacks.
+// Used when no specific method is specified for the tree command.
+func aggregateFromRoot(sf *stackFile) *pathTree {
+	pt := &pathTree{
+		samples:      make(map[string]int),
+		selfSamples:  make(map[string]int),
+		matchedNames: make(map[string]bool),
+		totalSamples: sf.totalSamples,
+	}
+
+	for i := range sf.stacks {
+		st := &sf.stacks[i]
+		// Build path from root (index 0) to leaf
+		for depth := 1; depth <= len(st.frames); depth++ {
+			path := make([]string, depth)
+			for j := 0; j < depth; j++ {
+				path[j] = shortName(st.frames[j])
+			}
+			key := strings.Join(path, ";")
+			pt.samples[key] += st.count
+		}
+		// Mark leaf as having self samples
+		if len(st.frames) > 0 {
+			fullPath := make([]string, len(st.frames))
+			for j := 0; j < len(st.frames); j++ {
+				fullPath[j] = shortName(st.frames[j])
+			}
+			leafKey := strings.Join(fullPath, ";")
+			pt.selfSamples[leafKey] += st.count
+		}
+	}
+	return pt
+}
+
 // aggregatePaths walks every stack in sf, finds frames matching method,
 // and calls extract to get the path to aggregate. extract receives the
 // stack's frames slice and the index of the matched frame.
