@@ -122,16 +122,12 @@ func traceHottestPath(pt *pathTree, rootKey string, minPct float64) {
 
 		// Leaf: append self-time annotation.
 		if isLeaf {
-			if selfCt := pt.selfSamples[prefix]; selfCt > 0 {
-				selfPct := 100.0 * float64(selfCt) / float64(pt.totalSamples)
-				if selfPct >= minPct {
-					line += fmt.Sprintf("  ← self=%.1f%%", selfPct)
-				}
-			}
-			fmt.Println(line)
-
 			selfCt := pt.selfSamples[prefix]
 			selfPct := 100.0 * float64(selfCt) / float64(pt.totalSamples)
+			if selfCt > 0 && selfPct >= minPct {
+				line += fmt.Sprintf("  ← self=%.1f%%", selfPct)
+			}
+			fmt.Println(line)
 			fmt.Printf("Hottest leaf: %s (self=%.1f%%)\n", name, selfPct)
 			break
 		}
