@@ -1190,44 +1190,77 @@ func TestAsprofSearchDirsIncludesApQuery(t *testing.T) {
 
 func TestResolveTargetsExplicit(t *testing.T) {
 	// Explicit flags bypass auto-detection
-	targets := resolveTargets("/nonexistent", true, false)
+	targets := resolveTargets("/nonexistent", true, false, false)
 	if len(targets) != 1 || targets[0] != "claude" {
 		t.Errorf("expected [claude], got %v", targets)
 	}
 
-	targets = resolveTargets("/nonexistent", false, true)
+	targets = resolveTargets("/nonexistent", false, true, false)
 	if len(targets) != 1 || targets[0] != "codex" {
 		t.Errorf("expected [codex], got %v", targets)
 	}
 
-	targets = resolveTargets("/nonexistent", true, true)
+	targets = resolveTargets("/nonexistent", true, true, false)
 	if len(targets) != 2 {
 		t.Errorf("expected 2 targets, got %v", targets)
 	}
 }
 
 func TestResolveTargetsAutoDetect(t *testing.T) {
-	dir := t.TempDir()
+	// Global scope: codex uses .codex
+	t.Run("global", func(t *testing.T) {
+		dir := t.TempDir()
 
-	// No agent dirs → empty
-	targets := resolveTargets(dir, false, false)
-	if len(targets) != 0 {
-		t.Errorf("expected empty, got %v", targets)
-	}
+		// No agent dirs → empty
+		targets := resolveTargets(dir, false, false, false)
+		if len(targets) != 0 {
+			t.Errorf("expected empty, got %v", targets)
+		}
 
-	// Create .claude → detects claude
-	os.MkdirAll(filepath.Join(dir, ".claude"), 0755)
-	targets = resolveTargets(dir, false, false)
-	if len(targets) != 1 || targets[0] != "claude" {
-		t.Errorf("expected [claude], got %v", targets)
-	}
+		// Create .claude → detects claude only
+		os.MkdirAll(filepath.Join(dir, ".claude"), 0755)
+		targets = resolveTargets(dir, false, false, false)
+		if len(targets) != 1 || targets[0] != "claude" {
+			t.Errorf("expected [claude], got %v", targets)
+		}
 
-	// Create .agents too → detects both
-	os.MkdirAll(filepath.Join(dir, ".agents"), 0755)
-	targets = resolveTargets(dir, false, false)
-	if len(targets) != 2 {
-		t.Errorf("expected 2 targets, got %v", targets)
-	}
+		// Create .codex → detects both
+		os.MkdirAll(filepath.Join(dir, ".codex"), 0755)
+		targets = resolveTargets(dir, false, false, false)
+		if len(targets) != 2 {
+			t.Errorf("expected 2 targets, got %v", targets)
+		}
+	})
+
+	// Project scope: codex uses .agents
+	t.Run("project", func(t *testing.T) {
+		dir := t.TempDir()
+
+		// Create .agents → detects codex
+		os.MkdirAll(filepath.Join(dir, ".agents"), 0755)
+		targets := resolveTargets(dir, false, false, true)
+		if len(targets) != 1 || targets[0] != "codex" {
+			t.Errorf("expected [codex], got %v", targets)
+		}
+
+		// Create .claude too → detects both
+		os.MkdirAll(filepath.Join(dir, ".claude"), 0755)
+		targets = resolveTargets(dir, false, false, true)
+		if len(targets) != 2 {
+			t.Errorf("expected 2 targets, got %v", targets)
+		}
+	})
+
+	// Project scope: .codex alone does NOT trigger codex detection
+	t.Run("project_codex_dir_ignored", func(t *testing.T) {
+		dir := t.TempDir()
+
+		os.MkdirAll(filepath.Join(dir, ".codex"), 0755)
+		targets := resolveTargets(dir, false, false, true)
+		if len(targets) != 0 {
+			t.Errorf("expected empty (project ignores .codex), got %v", targets)
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -1728,7 +1761,7 @@ func TestExtractZipTopLevelOnly(t *testing.T) {
 
 func TestWriteSkillNew(t *testing.T) {
 	dir := t.TempDir()
-	writeSkill(dir, "claude", "test content", false)
+	writeSkill(dir, "claude", "test content", false, false)
 
 	path := filepath.Join(dir, ".claude", "skills", "jfr", "SKILL.md")
 	data, err := os.ReadFile(path)
@@ -1742,8 +1775,8 @@ func TestWriteSkillNew(t *testing.T) {
 
 func TestWriteSkillForce(t *testing.T) {
 	dir := t.TempDir()
-	writeSkill(dir, "claude", "original", false)
-	writeSkill(dir, "claude", "updated", true)
+	writeSkill(dir, "claude", "original", false, false)
+	writeSkill(dir, "claude", "updated", true, false)
 
 	path := filepath.Join(dir, ".claude", "skills", "jfr", "SKILL.md")
 	data, err := os.ReadFile(path)
@@ -1752,6 +1785,34 @@ func TestWriteSkillForce(t *testing.T) {
 	}
 	if string(data) != "updated" {
 		t.Errorf("content = %q, want 'updated'", data)
+	}
+}
+
+func TestWriteSkillCodexGlobal(t *testing.T) {
+	dir := t.TempDir()
+	writeSkill(dir, "codex", "global codex", false, false)
+
+	path := filepath.Join(dir, ".codex", "skills", "jfr", "SKILL.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("skill file not found: %v", err)
+	}
+	if string(data) != "global codex" {
+		t.Errorf("content = %q, want 'global codex'", data)
+	}
+}
+
+func TestWriteSkillCodexProject(t *testing.T) {
+	dir := t.TempDir()
+	writeSkill(dir, "codex", "project codex", false, true)
+
+	path := filepath.Join(dir, ".agents", "skills", "jfr", "SKILL.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("skill file not found: %v", err)
+	}
+	if string(data) != "project codex" {
+		t.Errorf("content = %q, want 'project codex'", data)
 	}
 }
 

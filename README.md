@@ -69,7 +69,7 @@ explicitly to use `ap-query`.
 | `--project` | Install into the current directory instead of home |
 | `--force` | Overwrite existing skill files |
 | `--claude` | Install only for Claude Code (`.claude/skills/jfr/`) |
-| `--codex` | Install only for Codex (`.agents/skills/jfr/`) |
+| `--codex` | Install only for Codex (`.codex/skills/jfr/` global, `.agents/skills/jfr/` project) |
 | `--stdout` | Dump rendered skill to stdout (for piping into custom agents) |
 
 ### Full Reference
