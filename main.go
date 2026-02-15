@@ -7,7 +7,7 @@
 // Input: .jfr/.jfr.gz files are parsed as JFR binary; all other files and
 // stdin (-) are parsed as collapsed text.
 //
-// Commands: hot, tree, callers, threads, filter, events, collapse, diff, lines, info
+// Commands: hot, tree, trace, callers, threads, filter, events, collapse, diff, lines, info
 package main
 
 import (
@@ -49,6 +49,7 @@ Commands:
   info      One-shot triage: events, threads, hot methods, and drill-down.
   hot       Rank methods by self-time and total-time.
   tree      Call tree descending from a method (optional -m; shows all if omitted).
+  trace     Hottest path from a method to leaf (-m required).
   callers   Callers ascending to a method (-m required).
   lines     Source-line breakdown inside a method (-m required).
   threads   Thread sample distribution.
@@ -61,14 +62,14 @@ Commands:
   init      Install agent skill for JFR profiling analysis.
 
 Global flags:
-  --event TYPE, -e TYPE   Event type: cpu (default), wall, alloc, lock. JFR only.
+  --event TYPE, -e TYPE   Event type override: cpu, wall, alloc, lock. JFR only.
   -t THREAD               Filter stacks to threads matching substring.
 
 Command-specific flags:
   -m METHOD, --method METHOD   Substring match against method names.
   --top N                      Limit output rows (default: 10 for hot; unlimited for diff, lines, threads).
   --depth N                    Max tree/callers depth (default: 4).
-  --min-pct F                  Hide tree/callers nodes below this %% (default: 1.0).
+  --min-pct F                  Hide tree/callers/trace nodes below this %% (default: 1.0; trace default: 0.5).
   --min-delta F                Hide diff entries below this %% change (default: 0.5).
   --fqn                        Show fully-qualified names instead of Class.method.
   --assert-below F             Exit 1 if top method self%% >= F (for CI gates).
@@ -81,6 +82,7 @@ Examples:
   ap-query info profile.jfr
   ap-query hot profile.jfr --event cpu --top 20
   ap-query tree profile.jfr -m HashMap.resize --depth 6
+  ap-query trace profile.jfr -m HashMap.resize --min-pct 0.5
   ap-query callers profile.jfr -m HashMap.resize
   ap-query lines profile.jfr -m HashMap.resize
   ap-query hot profile.jfr -t "http-nio" --assert-below 15.0
@@ -228,6 +230,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: unknown event type %q (valid: cpu, wall, alloc, lock)\n", eventType)
 		os.Exit(2)
 	}
+	var err error
 
 	if cmd == "events" {
 		if len(f.args) < 1 {
@@ -250,25 +253,75 @@ func main() {
 			fmt.Fprintln(os.Stderr, "error: diff requires two files")
 			os.Exit(2)
 		}
+		beforePath := f.args[0]
+		afterPath := f.args[1]
 		thread := f.str("t", "thread")
 		fqn := f.boolean("fqn")
 		minDelta := f.floatVal([]string{"min-delta"}, 0.5)
 
-		before, _, err := openInput(f.args[0], eventType)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
+		eventsToParse := allJFREventTypes()
+		if eventExplicit {
+			eventsToParse = singleJFREventType(eventType)
 		}
-		after, _, err := openInput(f.args[1], eventType)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
+
+		var beforeEventCounts map[string]int
+		var beforeStacksByEvent map[string]*stackFile
+		if isJFRPath(beforePath) {
+			parsed, err := parseJFRData(beforePath, eventsToParse)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error: %v\n", err)
+				os.Exit(1)
+			}
+			beforeEventCounts = parsed.eventCounts
+			beforeStacksByEvent = parsed.stacksByEvent
+		}
+		var afterEventCounts map[string]int
+		var afterStacksByEvent map[string]*stackFile
+		if isJFRPath(afterPath) {
+			parsed, err := parseJFRData(afterPath, eventsToParse)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error: %v\n", err)
+				os.Exit(1)
+			}
+			afterEventCounts = parsed.eventCounts
+			afterStacksByEvent = parsed.stacksByEvent
+		}
+		eventReason := eventReasonUnknown
+		eventType, eventReason = resolveEventTypeForDiff(eventType, eventExplicit, beforeEventCounts, afterEventCounts)
+
+		var before *stackFile
+		if beforeStacksByEvent != nil {
+			before = beforeStacksByEvent[eventType]
+			if before == nil {
+				before = &stackFile{}
+			}
+		} else {
+			before, _, err = openInput(beforePath, eventType)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error: %v\n", err)
+				os.Exit(1)
+			}
+		}
+
+		var after *stackFile
+		if afterStacksByEvent != nil {
+			after = afterStacksByEvent[eventType]
+			if after == nil {
+				after = &stackFile{}
+			}
+		} else {
+			after, _, err = openInput(afterPath, eventType)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error: %v\n", err)
+				os.Exit(1)
+			}
 		}
 		if thread != "" {
 			before = before.filterByThread(thread)
 			after = after.filterByThread(thread)
 		}
 		top := f.intVal([]string{"top"}, 0)
+		printEventSelectionForDiff(eventType, eventReason, beforeEventCounts, afterEventCounts)
 		cmdDiff(before, after, minDelta, top, fqn)
 		return
 	}
@@ -278,15 +331,40 @@ func main() {
 	}
 	path := f.args[0]
 	thread := f.str("t", "thread")
-
-	sf, isJFR, err := openInput(path, eventType)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+	var eventCounts map[string]int
+	eventReason := eventReasonUnknown
+	var sf *stackFile
+	isJFR := false
+	if isJFRPath(path) {
+		isJFR = true
+		eventsToParse := allJFREventTypes()
+		if eventExplicit {
+			eventsToParse = singleJFREventType(eventType)
+		}
+		parsed, err := parseJFRData(path, eventsToParse)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		eventCounts = parsed.eventCounts
+		eventType, eventReason = resolveEventType(eventType, eventExplicit, eventCounts)
+		sf = parsed.stacksByEvent[eventType]
+		if sf == nil {
+			sf = &stackFile{}
+		}
+	} else {
+		sf, isJFR, err = openInput(path, eventType)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	if thread != "" {
 		sf = sf.filterByThread(thread)
+	}
+	if isJFR && cmd != "info" {
+		printEventSelectionForSingle(eventType, eventReason, eventCounts)
 	}
 
 	switch cmd {
@@ -304,6 +382,16 @@ func main() {
 		depth := f.intVal([]string{"depth"}, 4)
 		minPct := f.floatVal([]string{"min-pct"}, 1.0)
 		cmdTree(sf, method, depth, minPct)
+
+	case "trace":
+		method := f.str("m", "method")
+		if method == "" {
+			fmt.Fprintln(os.Stderr, "error: -m/--method required")
+			os.Exit(2)
+		}
+		minPct := f.floatVal([]string{"min-pct"}, 0.5)
+		fqn := f.boolean("fqn")
+		cmdTrace(sf, method, minPct, fqn)
 
 	case "callers":
 		method := f.str("m", "method")
@@ -348,30 +436,6 @@ func main() {
 		expand := f.intVal([]string{"expand"}, 3)
 		topThreads := f.intVal([]string{"top-threads"}, 10)
 		topMethods := f.intVal([]string{"top-methods"}, 20)
-		var eventCounts map[string]int
-		if isJFR {
-			eventCounts, _ = discoverEvents(path)
-			if !eventExplicit && len(eventCounts) > 0 && eventCounts[eventType] == 0 {
-				// Default event type has no samples; pick the dominant one.
-				best, bestN := "", 0
-				for name, n := range eventCounts {
-					if n > bestN {
-						best, bestN = name, n
-					}
-				}
-				if best != "" && best != eventType {
-					eventType = best
-					sf, _, err = openInput(path, eventType)
-					if err != nil {
-						fmt.Fprintf(os.Stderr, "error: %v\n", err)
-						os.Exit(1)
-					}
-					if thread != "" {
-						sf = sf.filterByThread(thread)
-					}
-				}
-			}
-		}
 		cmdInfo(sf, eventType, isJFR, eventCounts, expand, topThreads, topMethods)
 
 	default:

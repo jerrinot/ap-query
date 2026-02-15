@@ -6,10 +6,11 @@ import (
 )
 
 func cmdEvents(path string) error {
-	counts, err := discoverEvents(path)
+	parsed, err := parseJFRData(path, nil)
 	if err != nil {
 		return err
 	}
+	counts := parsed.eventCounts
 	if len(counts) == 0 {
 		fmt.Println("no supported events found")
 		return nil
