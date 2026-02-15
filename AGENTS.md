@@ -35,6 +35,10 @@
 - When adding profiler scenarios, store fixtures in `testdata/` and regenerate via `testdata/gen/generate.sh` instead of hand-editing binaries.
 - Before opening a PR, run `go test -v ./...` and at least one CLI smoke command.
 
+## Skill Template Maintenance
+- Whenever you add a new command, change existing behavior, modify flags, or alter output format, you MUST update `skill_template.md` to reflect the change.
+- The skill template is the external-facing reference that agents use to invoke `ap-query`; it must always stay in sync with the actual CLI.
+
 ## Commit & Pull Request Guidelines
 - Match history style: short, imperative commit subjects (example: `readme tweak`).
 - Keep each commit focused on one logical change.
