@@ -38,6 +38,7 @@
 ## Skill Template Maintenance
 - Whenever you add a new command, change existing behavior, modify flags, or alter output format, you MUST update `skill_template.md` to reflect the change.
 - The skill template is the external-facing reference that agents use to invoke `ap-query`; it must always stay in sync with the actual CLI.
+- `ap-query update` auto-regenerates any globally installed SKILL.md files after replacing the binary, so users get the latest skill template without manual re-init.
 
 ## Commit & Pull Request Guidelines
 - Match history style: short, imperative commit subjects (example: `readme tweak`).

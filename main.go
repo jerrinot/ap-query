@@ -596,6 +596,8 @@ func cmdUpdate() {
 	}
 
 	fmt.Printf("Successfully updated to ap-query %s\n", latest)
+
+	updateInstalledSkills(execPath)
 }
 
 func isGoInstall(execPath string) bool {

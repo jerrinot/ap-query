@@ -4188,3 +4188,136 @@ func TestCmdTraceHideRemovesTarget(t *testing.T) {
 		t.Errorf("expected 'no frames matching' when target is hidden, got:\n%s", out)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// TestExtractAsprofFromSkill
+// ---------------------------------------------------------------------------
+
+func TestExtractAsprofFromSkill(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{
+			name: "valid rendered skill",
+			content: `---
+name: jfr
+---
+## Profiling
+
+- CPU profiling: ` + "`/opt/async-profiler/bin/asprof -d 30 -o jfr -f profile.jfr <pid>`" + `
+- Wall-clock:    ` + "`/opt/async-profiler/bin/asprof -d 30 -e wall -o jfr -f profile.jfr <pid>`" + `
+`,
+			want: "/opt/async-profiler/bin/asprof",
+		},
+		{
+			name: "path with spaces",
+			content: `---
+name: jfr
+---
+- CPU profiling: ` + "`/home/user/my tools/asprof -d 30 -o jfr -f profile.jfr <pid>`" + `
+`,
+			want: "/home/user/my tools/asprof",
+		},
+		{
+			name:    "no asprof lines",
+			content: "---\nname: jfr\n---\nSome content without profiling commands.\n",
+			want:    "",
+		},
+		{
+			name:    "empty string",
+			content: "",
+			want:    "",
+		},
+		{
+			name:    "garbage content",
+			content: "random garbage\nno backticks here\njust text\n",
+			want:    "",
+		},
+		{
+			name:    "backtick but not asprof pattern",
+			content: "use `ap-query hot profile.jfr` to see hot methods\n",
+			want:    "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractAsprofFromSkill(tt.content)
+			if got != tt.want {
+				t.Errorf("extractAsprofFromSkill() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestUpdateInstalledSkillsNoSkills
+// ---------------------------------------------------------------------------
+
+func TestUpdateInstalledSkillsNoSkills(t *testing.T) {
+	// Use a temp dir as HOME so no real skills are found
+	tmpHome := t.TempDir()
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpHome)
+	defer os.Setenv("HOME", origHome)
+
+	// Should not panic or error when no skills exist
+	updateInstalledSkills("/nonexistent/ap-query")
+}
+
+func TestUpdateInstalledSkillsStaleAsprofFallsBack(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fake not portable to Windows")
+	}
+
+	tmpHome := t.TempDir()
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpHome)
+	defer os.Setenv("HOME", origHome)
+
+	// Install a SKILL.md with a stale (nonexistent) asprof path.
+	dir := skillDir("claude", tmpHome, false)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	stalePath := "/no/such/stale/asprof"
+	content := "---\nname: jfr\n---\n- CPU profiling: `" + stalePath + " -d 30 -o jfr -f profile.jfr <pid>`\n"
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Place a discoverable asprof in ~/.ap-query/bin (a search dir for findAsprof).
+	binDir := filepath.Join(tmpHome, ".ap-query", "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	realAsprof := filepath.Join(binDir, "asprof")
+	if err := os.WriteFile(realAsprof, []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a fake ap-query binary that logs its arguments.
+	argsFile := filepath.Join(tmpHome, "args.log")
+	fakeExec := filepath.Join(tmpHome, "fake-ap-query")
+	script := "#!/bin/sh\necho \"$@\" >> " + argsFile + "\n"
+	if err := os.WriteFile(fakeExec, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	updateInstalledSkills(fakeExec)
+
+	// Verify the fake binary was called with the fallback path, not the stale one.
+	data, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("fake binary was not called: %v", err)
+	}
+	args := string(data)
+	if strings.Contains(args, stalePath) {
+		t.Errorf("stale path %q should not have been passed, got: %s", stalePath, args)
+	}
+	if !strings.Contains(args, realAsprof) {
+		t.Errorf("expected fallback path %q in args, got: %s", realAsprof, args)
+	}
+}

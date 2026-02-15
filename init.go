@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -454,4 +455,81 @@ func expandPath(p string) string {
 		return p
 	}
 	return abs
+}
+
+// asprofRe matches profiling command lines like `/path/to/asprof -d 30 ...`
+var asprofRe = regexp.MustCompile("^`(.+?)\\s+-d\\s+30")
+
+// extractAsprofFromSkill parses a rendered SKILL.md and extracts the asprof
+// binary path from profiling command lines (e.g. "`/usr/bin/asprof -d 30 ...`").
+func extractAsprofFromSkill(content string) string {
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		// Match lines like "- CPU profiling: `/path/to/asprof -d 30 ..."
+		idx := strings.Index(line, "`")
+		if idx < 0 {
+			continue
+		}
+		sub := line[idx:]
+		if m := asprofRe.FindStringSubmatch(sub); m != nil {
+			return m[1]
+		}
+	}
+	return ""
+}
+
+// updateInstalledSkills scans global skill directories for existing SKILL.md
+// files and re-runs init on the new binary to regenerate them.
+func updateInstalledSkills(execPath string) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+
+	agents := []struct {
+		name string
+		flag string
+	}{
+		{"claude", "--claude"},
+		{"codex", "--codex"},
+	}
+
+	for _, agent := range agents {
+		dir := skillDir(agent.name, home, false)
+		skillPath := filepath.Join(dir, "SKILL.md")
+
+		data, err := os.ReadFile(skillPath)
+		if err != nil {
+			continue // not installed for this agent
+		}
+		content := string(data)
+
+		// Verify this is our skill by checking frontmatter
+		if !strings.Contains(content, "name: jfr") {
+			continue
+		}
+
+		// Try extracting asprof path from existing rendered content;
+		// fall back to auto-detection if missing or stale.
+		asprofPath := extractAsprofFromSkill(content)
+		if asprofPath != "" {
+			if _, err := os.Stat(asprofPath); err != nil {
+				asprofPath = ""
+			}
+		}
+		if asprofPath == "" {
+			asprofPath = findAsprof()
+		}
+		if asprofPath == "" {
+			fmt.Fprintf(os.Stderr, "warning: cannot determine asprof path for %s skill, skipping\n", agent.name)
+			continue
+		}
+
+		cmd := exec.Command(execPath, "init", "--force", agent.flag, "--asprof", asprofPath)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to update %s skill: %v\n", agent.name, err)
+		}
+	}
 }
