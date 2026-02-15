@@ -3573,3 +3573,85 @@ func TestJFRTraceMultiEventFile(t *testing.T) {
 		t.Error("expected non-empty output for both event types")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// TestCollapseRoundTrip
+// ---------------------------------------------------------------------------
+
+// aggregateStacks normalises a stackFile into map["thread||frame1;frame2;..."] → totalCount,
+// collapsing entries that differ only by line numbers.
+func aggregateStacks(sf *stackFile) map[string]int {
+	m := make(map[string]int, len(sf.stacks))
+	for i := range sf.stacks {
+		st := &sf.stacks[i]
+		key := st.thread + "||" + strings.Join(st.frames, ";")
+		m[key] += st.count
+	}
+	return m
+}
+
+func TestCollapseRoundTrip(t *testing.T) {
+	tests := []struct {
+		fixture string
+		event   string
+	}{
+		{"cpu.jfr", "cpu"},
+		{"wall.jfr", "wall"},
+		{"alloc.jfr", "alloc"},
+		{"lock.jfr", "lock"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.fixture, func(t *testing.T) {
+			// 1. Parse JFR directly
+			parsed, err := parseJFRData(jfrFixture(tt.fixture), singleJFREventType(tt.event))
+			if err != nil {
+				t.Fatalf("parseJFRData: %v", err)
+			}
+			jfrSF := parsed.stacksByEvent[tt.event]
+			if jfrSF == nil {
+				t.Fatalf("no stacks for event %q", tt.event)
+			}
+
+			// 2. Collapse to text
+			collapsed := captureOutput(func() { cmdCollapse(jfrSF) })
+
+			// 3. Parse collapsed text back
+			roundTripSF, err := parseCollapsed(strings.NewReader(collapsed))
+			if err != nil {
+				t.Fatalf("parseCollapsed: %v", err)
+			}
+
+			// 4. Aggregate both sides (normalises line-number-only differences)
+			jfrAgg := aggregateStacks(jfrSF)
+			rtAgg := aggregateStacks(roundTripSF)
+
+			// 5. Total sample counts must match
+			if jfrSF.totalSamples != roundTripSF.totalSamples {
+				t.Errorf("totalSamples mismatch: jfr=%d roundTrip=%d", jfrSF.totalSamples, roundTripSF.totalSamples)
+			}
+
+			// 6. Aggregated map sizes must match
+			if len(jfrAgg) != len(rtAgg) {
+				t.Errorf("aggregated key count mismatch: jfr=%d roundTrip=%d", len(jfrAgg), len(rtAgg))
+			}
+
+			// 7. Every key/count must match in both directions
+			for key, jfrCount := range jfrAgg {
+				rtCount, ok := rtAgg[key]
+				if !ok {
+					t.Errorf("key present in jfr but missing after round-trip: %q (count=%d)", key, jfrCount)
+					continue
+				}
+				if jfrCount != rtCount {
+					t.Errorf("count mismatch for %q: jfr=%d roundTrip=%d", key, jfrCount, rtCount)
+				}
+			}
+			for key, rtCount := range rtAgg {
+				if _, ok := jfrAgg[key]; !ok {
+					t.Errorf("key present after round-trip but missing in jfr: %q (count=%d)", key, rtCount)
+				}
+			}
+		})
+	}
+}
