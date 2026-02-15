@@ -488,7 +488,12 @@ func main() {
 	}
 
 	if thread != "" && cmd != "timeline" {
+		totalBefore := sf.totalSamples
 		sf = sf.filterByThread(thread)
+		if totalBefore > 0 {
+			fmt.Fprintf(os.Stderr, "Thread filter: %s — %d/%d samples (%.1f%%)\n",
+				thread, sf.totalSamples, totalBefore, pctOf(sf.totalSamples, totalBefore))
+		}
 	}
 	if isJFR && cmd != "info" && cmd != "timeline" {
 		printEventSelectionForSingle(eventType, eventReason, eventCounts)

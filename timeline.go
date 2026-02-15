@@ -89,6 +89,10 @@ func cmdTimeline(parsed *parsedJFR, eventType string,
 
 	// Thread filtering for timeline (applied here, not in main).
 	if thread != "" {
+		var totalBefore int
+		for i := range events {
+			totalBefore += events[i].weight
+		}
 		var filtered []timedEvent
 		for i := range events {
 			if strings.Contains(events[i].thread, thread) {
@@ -96,6 +100,14 @@ func cmdTimeline(parsed *parsedJFR, eventType string,
 			}
 		}
 		events = filtered
+		var filteredWeight int
+		for i := range events {
+			filteredWeight += events[i].weight
+		}
+		if totalBefore > 0 {
+			fmt.Fprintf(os.Stderr, "Thread filter: %s — %d/%d samples (%.1f%%)\n",
+				thread, filteredWeight, totalBefore, pctOf(filteredWeight, totalBefore))
+		}
 	}
 
 	// Count total weight before method filtering.
