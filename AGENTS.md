@@ -21,6 +21,11 @@
 - `echo "A;B;C 10" | ./ap-query hot -` runs a quick smoke check for collapsed-stack input.
 - `./testdata/gen/generate.sh /path/to/libasyncProfiler.so` regenerates JFR fixtures (Java 17+ and async-profiler required).
 
+## Code Quality
+- Never apply hacks, workarounds, or dirty fixes. Find and fix the root cause.
+- If something is a bug, treat it as a bug regardless of how unlikely it is.
+- Don't be lazy or sloppy. There is no deadline — take all the time and tokens needed for a proper solution.
+
 ## Coding Style & Naming Conventions
 - Follow idiomatic Go formatting and structure; run `gofmt` before committing.
 - Use tabs/standard Go formatting and keep functions small and command-focused.
