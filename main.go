@@ -251,6 +251,85 @@ func parseTimeRangeFlags(f *flags, cmd string) timeRange {
 	return tr
 }
 
+func handleDiffCommand(f *flags, eventType string, eventExplicit bool) {
+	if len(f.args) < 2 {
+		fmt.Fprintln(os.Stderr, "error: diff requires two files")
+		os.Exit(2)
+	}
+	beforePath := f.args[0]
+	afterPath := f.args[1]
+	thread := f.str("t", "thread")
+	fqn := f.boolean("fqn")
+	minDelta := f.floatVal([]string{"min-delta"}, 0.5)
+
+	eventsToParse := allJFREventTypes()
+	if eventExplicit {
+		eventsToParse = singleJFREventType(eventType)
+	}
+
+	var beforeEventCounts map[string]int
+	var beforeStacksByEvent map[string]*stackFile
+	if isJFRPath(beforePath) {
+		parsed, err := parseJFRData(beforePath, eventsToParse, parseOpts{})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		beforeEventCounts = parsed.eventCounts
+		beforeStacksByEvent = parsed.stacksByEvent
+	}
+	var afterEventCounts map[string]int
+	var afterStacksByEvent map[string]*stackFile
+	if isJFRPath(afterPath) {
+		parsed, err := parseJFRData(afterPath, eventsToParse, parseOpts{})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		afterEventCounts = parsed.eventCounts
+		afterStacksByEvent = parsed.stacksByEvent
+	}
+	eventReason := eventReasonUnknown
+	eventType, eventReason = resolveEventTypeForDiff(eventType, eventExplicit, beforeEventCounts, afterEventCounts)
+
+	var before *stackFile
+	if beforeStacksByEvent != nil {
+		before = beforeStacksByEvent[eventType]
+		if before == nil {
+			before = &stackFile{}
+		}
+	} else {
+		var err error
+		before, _, err = openInput(beforePath, eventType)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
+	var after *stackFile
+	if afterStacksByEvent != nil {
+		after = afterStacksByEvent[eventType]
+		if after == nil {
+			after = &stackFile{}
+		}
+	} else {
+		var err error
+		after, _, err = openInput(afterPath, eventType)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	if thread != "" {
+		before = before.filterByThread(thread)
+		after = after.filterByThread(thread)
+	}
+	top := f.intVal([]string{"top"}, 0)
+	printEventSelectionForDiff(eventType, eventReason, beforeEventCounts, afterEventCounts)
+	cmdDiff(before, after, minDelta, top, fqn)
+}
+
 func exitTimelineRequiresJFR() {
 	fmt.Fprintln(os.Stderr, "error: timeline requires a JFR file")
 	os.Exit(2)
@@ -324,82 +403,8 @@ func main() {
 	fromStr := tr.fromStr
 	needTimed := tr.needTimed
 
-	// diff requires two positional args
 	if cmd == "diff" {
-		if len(f.args) < 2 {
-			fmt.Fprintln(os.Stderr, "error: diff requires two files")
-			os.Exit(2)
-		}
-		beforePath := f.args[0]
-		afterPath := f.args[1]
-		thread := f.str("t", "thread")
-		fqn := f.boolean("fqn")
-		minDelta := f.floatVal([]string{"min-delta"}, 0.5)
-
-		eventsToParse := allJFREventTypes()
-		if eventExplicit {
-			eventsToParse = singleJFREventType(eventType)
-		}
-
-		var beforeEventCounts map[string]int
-		var beforeStacksByEvent map[string]*stackFile
-		if isJFRPath(beforePath) {
-			parsed, err := parseJFRData(beforePath, eventsToParse, parseOpts{})
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "error: %v\n", err)
-				os.Exit(1)
-			}
-			beforeEventCounts = parsed.eventCounts
-			beforeStacksByEvent = parsed.stacksByEvent
-		}
-		var afterEventCounts map[string]int
-		var afterStacksByEvent map[string]*stackFile
-		if isJFRPath(afterPath) {
-			parsed, err := parseJFRData(afterPath, eventsToParse, parseOpts{})
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "error: %v\n", err)
-				os.Exit(1)
-			}
-			afterEventCounts = parsed.eventCounts
-			afterStacksByEvent = parsed.stacksByEvent
-		}
-		eventReason := eventReasonUnknown
-		eventType, eventReason = resolveEventTypeForDiff(eventType, eventExplicit, beforeEventCounts, afterEventCounts)
-
-		var before *stackFile
-		if beforeStacksByEvent != nil {
-			before = beforeStacksByEvent[eventType]
-			if before == nil {
-				before = &stackFile{}
-			}
-		} else {
-			before, _, err = openInput(beforePath, eventType)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "error: %v\n", err)
-				os.Exit(1)
-			}
-		}
-
-		var after *stackFile
-		if afterStacksByEvent != nil {
-			after = afterStacksByEvent[eventType]
-			if after == nil {
-				after = &stackFile{}
-			}
-		} else {
-			after, _, err = openInput(afterPath, eventType)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "error: %v\n", err)
-				os.Exit(1)
-			}
-		}
-		if thread != "" {
-			before = before.filterByThread(thread)
-			after = after.filterByThread(thread)
-		}
-		top := f.intVal([]string{"top"}, 0)
-		printEventSelectionForDiff(eventType, eventReason, beforeEventCounts, afterEventCounts)
-		cmdDiff(before, after, minDelta, top, fqn)
+		handleDiffCommand(&f, eventType, eventExplicit)
 		return
 	}
 
