@@ -79,10 +79,24 @@ distribution across threads to help pick the right filter.
 - Always start with ` + "`info`" + `. Quote specific numbers. Mention thread if ` + "`-t`" + ` was used.
 `
 
-// agent skill directories relative to a base dir (home or project root)
-var agentSkillDirs = map[string]string{
-	"claude": filepath.Join(".claude", "skills", "jfr"),
-	"codex":  filepath.Join(".agents", "skills", "jfr"),
+// skillDir returns the absolute skill directory for an agent.
+// Codex uses .agents for project-local installs, .codex (or $CODEX_HOME) for global.
+func skillDir(agent, baseDir string, project bool) string {
+	switch agent {
+	case "claude":
+		return filepath.Join(baseDir, ".claude", "skills", "jfr")
+	case "codex":
+		if project {
+			return filepath.Join(baseDir, ".agents", "skills", "jfr")
+		}
+		base := filepath.Join(baseDir, ".codex")
+		if h := os.Getenv("CODEX_HOME"); h != "" {
+			base = h
+		}
+		return filepath.Join(base, "skills", "jfr")
+	default:
+		panic("unknown agent: " + agent)
+	}
 }
 
 type initOpts struct {
@@ -151,16 +165,20 @@ func cmdInit(opts initOpts) {
 	}
 
 	// Determine which agents to target
-	targets := resolveTargets(baseDir, opts.claude, opts.codex)
+	targets := resolveTargets(baseDir, opts.claude, opts.codex, opts.project)
 	if len(targets) == 0 {
-		fmt.Fprintln(os.Stderr, "error: no agent configuration found (neither .claude nor .agents exists)")
+		if opts.project {
+			fmt.Fprintln(os.Stderr, "error: no agent configuration found (neither .claude nor .agents exists)")
+		} else {
+			fmt.Fprintln(os.Stderr, "error: no agent configuration found (neither .claude nor .codex exists)")
+		}
 		fmt.Fprintln(os.Stderr, "  use --claude or --codex to create one explicitly")
 		os.Exit(1)
 	}
 
 	// Write skill file for each target
 	for _, t := range targets {
-		writeSkill(baseDir, t, content, opts.force)
+		writeSkill(baseDir, t, content, opts.force, opts.project)
 	}
 
 	fmt.Fprintf(os.Stderr, "  ap-query: %s\n", apQueryPath)
@@ -170,7 +188,7 @@ func cmdInit(opts initOpts) {
 // resolveTargets decides which agent directories to install to.
 // If explicit flags are set, use those (creating dirs as needed).
 // Otherwise auto-detect which agent config dirs exist under baseDir.
-func resolveTargets(baseDir string, claude, codex bool) []string {
+func resolveTargets(baseDir string, claude, codex, project bool) []string {
 	if claude || codex {
 		var targets []string
 		if claude {
@@ -185,10 +203,8 @@ func resolveTargets(baseDir string, claude, codex bool) []string {
 	// Auto-detect: check which agent root dirs exist
 	var targets []string
 	for _, agent := range []string{"claude", "codex"} {
-		// Check for the agent's root dir (e.g. ~/.claude or ~/.agents)
-		root := agentSkillDirs[agent]
-		// The root config dir is the first path component (e.g. ".claude" or ".agents")
-		configDir := filepath.Join(baseDir, strings.SplitN(root, string(filepath.Separator), 2)[0])
+		// Config root is 2 levels above the skill dir (above skills/jfr)
+		configDir := filepath.Dir(filepath.Dir(skillDir(agent, baseDir, project)))
 		if _, err := os.Stat(configDir); err == nil {
 			targets = append(targets, agent)
 		}
@@ -196,13 +212,13 @@ func resolveTargets(baseDir string, claude, codex bool) []string {
 	return targets
 }
 
-func writeSkill(baseDir, agent, content string, force bool) {
-	skillDir := filepath.Join(baseDir, agentSkillDirs[agent])
-	if err := os.MkdirAll(skillDir, 0755); err != nil {
-		fmt.Fprintf(os.Stderr, "error: cannot create directory %s: %v\n", skillDir, err)
+func writeSkill(baseDir, agent, content string, force, project bool) {
+	dir := skillDir(agent, baseDir, project)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "error: cannot create directory %s: %v\n", dir, err)
 		os.Exit(1)
 	}
-	skillPath := filepath.Join(skillDir, "SKILL.md")
+	skillPath := filepath.Join(dir, "SKILL.md")
 	if _, err := os.Stat(skillPath); err == nil && !force {
 		fmt.Fprintf(os.Stderr, "error: %s already exists (use --force to overwrite)\n", skillPath)
 		os.Exit(1)
