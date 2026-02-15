@@ -218,11 +218,11 @@ func main() {
 		printVersion(os.Stdout)
 		return
 	}
+	f := parseFlags(os.Args[2:])
 	if cmd == "update" {
-		cmdUpdate()
+		cmdUpdate(f.boolean("force"))
 		return
 	}
-	f := parseFlags(os.Args[2:])
 
 	if cmd == "init" {
 		cmdInit(initOpts{
@@ -635,8 +635,8 @@ func checkLatestVersion() string {
 // update
 // ---------------------------------------------------------------------------
 
-func cmdUpdate() {
-	if version == "dev" {
+func cmdUpdate(force bool) {
+	if version == "dev" && !force {
 		fmt.Fprintln(os.Stderr, "error: cannot self-update a dev build; use 'go install' or download a release binary")
 		os.Exit(1)
 	}
@@ -652,7 +652,7 @@ func cmdUpdate() {
 		os.Exit(1)
 	}
 
-	if isGoInstall(execPath) {
+	if isGoInstall(execPath) && !force {
 		fmt.Fprintln(os.Stderr, "It looks like ap-query was installed via 'go install'.")
 		fmt.Fprintln(os.Stderr, "Please update with:  go install github.com/jerrinot/ap-query@latest")
 		return
