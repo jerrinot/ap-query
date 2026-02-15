@@ -1,6 +1,9 @@
 package main
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+)
 
 func shortName(frame string) string {
 	// "com/example/App.process" → "App.process"
@@ -23,6 +26,11 @@ func displayName(frame string, fqn bool) string {
 func matchesMethod(frame, pattern string) bool {
 	normalized := strings.ReplaceAll(frame, "/", ".")
 	return strings.Contains(normalized, pattern) || strings.Contains(shortName(frame), pattern)
+}
+
+func matchesHide(frame string, re *regexp.Regexp) bool {
+	normalized := strings.ReplaceAll(frame, "/", ".")
+	return re.MatchString(normalized) || re.MatchString(shortName(frame))
 }
 
 func truncate(n, top int) int {

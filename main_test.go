@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -3831,5 +3832,359 @@ func TestParsePerfCollapsed(t *testing.T) {
 	})
 	if !strings.Contains(treeOut, "chacha_permute") {
 		t.Errorf("tree output missing target method, got:\n%s", treeOut)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// hideFrames unit tests
+// ---------------------------------------------------------------------------
+
+func TestHideFramesBasic(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "Framework.wrap", "B.b", "C.c"}, lines: []uint32{1, 2, 3, 4}, count: 10, thread: "main"},
+	})
+	re := regexp.MustCompile("Framework")
+	got := sf.hideFrames(re)
+
+	if len(got.stacks) != 1 {
+		t.Fatalf("expected 1 stack, got %d", len(got.stacks))
+	}
+	st := got.stacks[0]
+	wantFrames := []string{"A.a", "B.b", "C.c"}
+	wantLines := []uint32{1, 3, 4}
+	if len(st.frames) != len(wantFrames) {
+		t.Fatalf("frames len=%d, want %d", len(st.frames), len(wantFrames))
+	}
+	for i := range wantFrames {
+		if st.frames[i] != wantFrames[i] {
+			t.Errorf("frames[%d]=%q, want %q", i, st.frames[i], wantFrames[i])
+		}
+		if st.lines[i] != wantLines[i] {
+			t.Errorf("lines[%d]=%d, want %d", i, st.lines[i], wantLines[i])
+		}
+	}
+	if st.count != 10 {
+		t.Errorf("count=%d, want 10", st.count)
+	}
+	if st.thread != "main" {
+		t.Errorf("thread=%q, want main", st.thread)
+	}
+	if got.totalSamples != sf.totalSamples {
+		t.Errorf("totalSamples=%d, want %d", got.totalSamples, sf.totalSamples)
+	}
+}
+
+func TestHideFramesConsecutive(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "Wrap.one", "Wrap.two", "B.b"}, lines: []uint32{0, 0, 0, 0}, count: 5, thread: ""},
+	})
+	re := regexp.MustCompile("Wrap")
+	got := sf.hideFrames(re)
+
+	if len(got.stacks) != 1 {
+		t.Fatalf("expected 1 stack, got %d", len(got.stacks))
+	}
+	st := got.stacks[0]
+	if len(st.frames) != 2 || st.frames[0] != "A.a" || st.frames[1] != "B.b" {
+		t.Errorf("frames=%v, want [A.a B.b]", st.frames)
+	}
+}
+
+func TestHideFramesAlternation(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "Foo.bar", "B.b", "Baz.qux", "C.c"}, lines: []uint32{0, 0, 0, 0, 0}, count: 7, thread: ""},
+	})
+	re := regexp.MustCompile("Foo|Baz")
+	got := sf.hideFrames(re)
+
+	if len(got.stacks) != 1 {
+		t.Fatalf("expected 1 stack, got %d", len(got.stacks))
+	}
+	st := got.stacks[0]
+	if len(st.frames) != 3 || st.frames[0] != "A.a" || st.frames[1] != "B.b" || st.frames[2] != "C.c" {
+		t.Errorf("frames=%v, want [A.a B.b C.c]", st.frames)
+	}
+}
+
+func TestHideFramesLeaf(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "B.b", "Leaf.work"}, lines: []uint32{0, 0, 0}, count: 10, thread: ""},
+	})
+	re := regexp.MustCompile("Leaf")
+	got := sf.hideFrames(re)
+
+	if len(got.stacks) != 1 {
+		t.Fatalf("expected 1 stack, got %d", len(got.stacks))
+	}
+	st := got.stacks[0]
+	// B.b becomes the new leaf
+	if len(st.frames) != 2 || st.frames[1] != "B.b" {
+		t.Errorf("frames=%v, want [A.a B.b]", st.frames)
+	}
+}
+
+func TestHideFramesAllHidden(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "B.b"}, lines: []uint32{0, 0}, count: 10, thread: ""},
+		{frames: []string{"A.a", "C.c"}, lines: []uint32{0, 0}, count: 5, thread: ""},
+	})
+	re := regexp.MustCompile(".*") // matches everything
+	got := sf.hideFrames(re)
+
+	if len(got.stacks) != 0 {
+		t.Errorf("expected 0 stacks, got %d", len(got.stacks))
+	}
+	if got.totalSamples != sf.totalSamples {
+		t.Errorf("totalSamples=%d, want %d (preserved from original)", got.totalSamples, sf.totalSamples)
+	}
+}
+
+func TestHideFramesNoMatch(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "B.b", "C.c"}, lines: []uint32{1, 2, 3}, count: 10, thread: "main"},
+	})
+	re := regexp.MustCompile("Nonexistent")
+	got := sf.hideFrames(re)
+
+	if len(got.stacks) != 1 {
+		t.Fatalf("expected 1 stack, got %d", len(got.stacks))
+	}
+	st := got.stacks[0]
+	if len(st.frames) != 3 {
+		t.Errorf("frames len=%d, want 3 (no match should keep all)", len(st.frames))
+	}
+	for i := range sf.stacks[0].frames {
+		if st.frames[i] != sf.stacks[0].frames[i] {
+			t.Errorf("frames[%d]=%q, want %q", i, st.frames[i], sf.stacks[0].frames[i])
+		}
+		if st.lines[i] != sf.stacks[0].lines[i] {
+			t.Errorf("lines[%d]=%d, want %d", i, st.lines[i], sf.stacks[0].lines[i])
+		}
+	}
+}
+
+func TestHideFramesNormalized(t *testing.T) {
+	// Hide should match against normalized (slash→dot) names
+	sf := makeStackFile([]stack{
+		{frames: []string{"com/example/Wrap.handle", "com/example/App.run"}, lines: []uint32{0, 0}, count: 10, thread: ""},
+	})
+	re := regexp.MustCompile("com\\.example\\.Wrap")
+	got := sf.hideFrames(re)
+
+	if len(got.stacks) != 1 {
+		t.Fatalf("expected 1 stack, got %d", len(got.stacks))
+	}
+	if got.stacks[0].frames[0] != "com/example/App.run" {
+		t.Errorf("expected only App.run, got %v", got.stacks[0].frames)
+	}
+}
+
+func TestHideFramesPartialStacks(t *testing.T) {
+	// One stack fully hidden, another survives
+	sf := makeStackFile([]stack{
+		{frames: []string{"Wrap.a"}, lines: []uint32{0}, count: 3, thread: ""},
+		{frames: []string{"Wrap.a", "Real.b"}, lines: []uint32{0, 0}, count: 7, thread: ""},
+	})
+	re := regexp.MustCompile("Wrap")
+	got := sf.hideFrames(re)
+
+	if len(got.stacks) != 1 {
+		t.Fatalf("expected 1 stack (the one with Real.b), got %d", len(got.stacks))
+	}
+	if got.stacks[0].frames[0] != "Real.b" {
+		t.Errorf("surviving stack should be [Real.b], got %v", got.stacks[0].frames)
+	}
+	if got.totalSamples != 10 {
+		t.Errorf("totalSamples=%d, want 10 (preserved)", got.totalSamples)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// hideFrames integration tests via cmdTree
+// ---------------------------------------------------------------------------
+
+func TestCmdTreeHide(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.main", "Framework.wrap", "B.process", "C.work"}, lines: []uint32{0, 0, 0, 0}, count: 50, thread: ""},
+		{frames: []string{"A.main", "Framework.wrap", "B.process", "D.other"}, lines: []uint32{0, 0, 0, 0}, count: 50, thread: ""},
+	})
+	re := regexp.MustCompile("Framework")
+	hidden := sf.hideFrames(re)
+
+	out := captureOutput(func() {
+		cmdTree(hidden, "", 4, 0.0)
+	})
+
+	// Framework.wrap should be gone
+	if strings.Contains(out, "Framework") {
+		t.Errorf("expected Framework removed, got:\n%s", out)
+	}
+	// A.main, B.process, C.work, D.other should survive
+	for _, want := range []string{"A.main", "B.process", "C.work", "D.other"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in output, got:\n%s", want, out)
+		}
+	}
+}
+
+func TestCmdTreeHideWithMethod(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.main", "Framework.wrap", "B.process", "C.work"}, lines: []uint32{0, 0, 0, 0}, count: 100, thread: ""},
+	})
+	re := regexp.MustCompile("Framework")
+	hidden := sf.hideFrames(re)
+
+	out := captureOutput(func() {
+		cmdTree(hidden, "B.process", 4, 0.0)
+	})
+
+	if strings.Contains(out, "Framework") {
+		t.Errorf("Framework should be hidden, got:\n%s", out)
+	}
+	if !strings.Contains(out, "B.process") {
+		t.Errorf("expected B.process in output, got:\n%s", out)
+	}
+	if !strings.Contains(out, "C.work") {
+		t.Errorf("expected C.work in output, got:\n%s", out)
+	}
+}
+
+func TestCmdTreeHideRemovesMethodTarget(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "Target.run", "B.b"}, lines: []uint32{0, 0, 0}, count: 10, thread: ""},
+	})
+	re := regexp.MustCompile("Target")
+	hidden := sf.hideFrames(re)
+
+	out := captureOutput(func() {
+		cmdTree(hidden, "Target.run", 4, 0.0)
+	})
+
+	if !strings.Contains(out, "no frames matching") {
+		t.Errorf("expected 'no frames matching' when target is hidden, got:\n%s", out)
+	}
+}
+
+func TestCmdTreeHideDepthBenefit(t *testing.T) {
+	// With Framework.wrap present, depth=3 can only reach B.process
+	// After hiding, depth=3 reaches C.work
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.main", "Framework.wrap", "B.process", "C.work"}, lines: []uint32{0, 0, 0, 0}, count: 100, thread: ""},
+	})
+
+	// Without hide, depth=3 from root shows A.main→Framework.wrap→B.process but not C.work
+	outBefore := captureOutput(func() {
+		cmdTree(sf, "", 3, 0.0)
+	})
+	if strings.Contains(outBefore, "C.work") {
+		t.Skip("C.work visible at depth=3 without hide; depth accounting changed")
+	}
+
+	// With hide, depth=3 should now reach C.work
+	re := regexp.MustCompile("Framework")
+	hidden := sf.hideFrames(re)
+	outAfter := captureOutput(func() {
+		cmdTree(hidden, "", 3, 0.0)
+	})
+	if !strings.Contains(outAfter, "C.work") {
+		t.Errorf("expected C.work reachable at depth=3 after hide, got:\n%s", outAfter)
+	}
+}
+
+func TestCmdTreeHideAllStacksFullyHidden(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "B.b"}, lines: []uint32{0, 0}, count: 10, thread: ""},
+	})
+	re := regexp.MustCompile(".*")
+	hidden := sf.hideFrames(re)
+
+	out := captureOutput(func() {
+		cmdTree(hidden, "", 4, 0.0)
+	})
+
+	// totalSamples > 0 but no stacks → "no frames matching '(all)'"
+	if !strings.Contains(out, "no frames matching '(all)'") {
+		t.Errorf("expected \"no frames matching '(all)'\", got:\n%s", out)
+	}
+}
+
+func TestMatchesHide(t *testing.T) {
+	tests := []struct {
+		frame string
+		regex string
+		want  bool
+	}{
+		{"com/example/App.process", "App\\.process", true},
+		{"com/example/App.process", "com\\.example", true},
+		{"com/example/App.process", "Foo\\.bar", false},
+		{"com.example.App.process", "App\\.process", true},
+		{"Thread.run", "Thread", true},
+		{"Thread.run", "^Thread\\.run$", true},
+		{"Thread.run", "^run$", false},
+	}
+	for _, tt := range tests {
+		re := regexp.MustCompile(tt.regex)
+		got := matchesHide(tt.frame, re)
+		if got != tt.want {
+			t.Errorf("matchesHide(%q, %q) = %v, want %v", tt.frame, tt.regex, got, tt.want)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// hideFrames integration tests via cmdTrace and cmdCallers
+// ---------------------------------------------------------------------------
+
+func TestCmdTraceHide(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.main", "Wrap.x", "B.process", "C.work"}, lines: []uint32{0, 0, 0, 0}, count: 100, thread: ""},
+	})
+	re := regexp.MustCompile("Wrap")
+	hidden := sf.hideFrames(re)
+
+	out := captureOutput(func() {
+		cmdTrace(hidden, "B.process", 0.0, false)
+	})
+
+	if strings.Contains(out, "Wrap") {
+		t.Errorf("expected Wrap removed, got:\n%s", out)
+	}
+	if !strings.Contains(out, "C.work") {
+		t.Errorf("expected C.work in output, got:\n%s", out)
+	}
+}
+
+func TestCmdCallersHide(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.main", "Wrap.x", "B.process", "C.work"}, lines: []uint32{0, 0, 0, 0}, count: 100, thread: ""},
+	})
+	re := regexp.MustCompile("Wrap")
+	hidden := sf.hideFrames(re)
+
+	out := captureOutput(func() {
+		cmdCallers(hidden, "C.work", 4, 0.0)
+	})
+
+	if strings.Contains(out, "Wrap") {
+		t.Errorf("expected Wrap removed, got:\n%s", out)
+	}
+	if !strings.Contains(out, "B.process") {
+		t.Errorf("expected B.process in callers output, got:\n%s", out)
+	}
+}
+
+func TestCmdTraceHideRemovesTarget(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.main", "Target.run", "B.process"}, lines: []uint32{0, 0, 0}, count: 100, thread: ""},
+	})
+	re := regexp.MustCompile("Target")
+	hidden := sf.hideFrames(re)
+
+	out := captureOutput(func() {
+		cmdTrace(hidden, "Target.run", 0.0, false)
+	})
+
+	if !strings.Contains(out, "no frames matching") {
+		t.Errorf("expected 'no frames matching' when target is hidden, got:\n%s", out)
 	}
 }
