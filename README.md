@@ -14,9 +14,6 @@ still getting lost.
 ```bash
 # one-liner (latest release)
 curl -fsSL https://raw.githubusercontent.com/jerrinot/ap-query/master/install.sh | sh
-
-# or with Go
-go install github.com/jerrinot/ap-query@latest
 ```
 
 ### 2) Install the agent skill
