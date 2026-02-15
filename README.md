@@ -12,7 +12,6 @@ still getting lost.
 ### 1) Install `ap-query`
 
 ```bash
-# one-liner (latest release)
 curl -fsSL https://raw.githubusercontent.com/jerrinot/ap-query/master/install.sh | sh
 ```
 
