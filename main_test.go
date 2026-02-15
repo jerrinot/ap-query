@@ -478,7 +478,7 @@ func TestCmdInfo(t *testing.T) {
 	})
 
 	out := captureOutput(func() {
-		cmdInfo(sf, "cpu", true, map[string]int{"cpu": 15}, 0, 5, 10)
+		cmdInfo(sf, "cpu", true, map[string]int{"cpu": 15}, 0, 5, 10, 0)
 	})
 
 	if !strings.Contains(out, "=== THREADS (top") {
@@ -501,13 +501,48 @@ func TestCmdInfo(t *testing.T) {
 	}
 }
 
+func TestCmdInfoDurationHeader(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "B.b"}, lines: []uint32{10, 20}, count: 100, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdInfo(sf, "cpu", true, map[string]int{"cpu": 100}, 0, 5, 10, 30_000_000_000) // 30s
+	})
+
+	if !strings.Contains(out, "Duration: 30.0s") {
+		t.Errorf("expected 'Duration: 30.0s' header, got:\n%s", out)
+	}
+	if !strings.Contains(out, "Samples: 100 (cpu)") {
+		t.Errorf("expected 'Samples: 100 (cpu)' header, got:\n%s", out)
+	}
+	// When duration is shown, the separate "Event:" header should not appear
+	if strings.Contains(out, "Event: cpu") {
+		t.Error("expected no separate 'Event:' header when duration is shown")
+	}
+}
+
+func TestCmdInfoNoDurationForNonJFR(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a"}, lines: []uint32{0}, count: 10, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdInfo(sf, "cpu", false, nil, 0, 5, 10, 0)
+	})
+
+	if strings.Contains(out, "Duration:") {
+		t.Error("expected no Duration header for non-JFR input")
+	}
+}
+
 func TestCmdInfoAlsoAvailable(t *testing.T) {
 	sf := makeStackFile([]stack{
 		{frames: []string{"A.a"}, lines: []uint32{0}, count: 10, thread: "main"},
 	})
 
 	out := captureOutput(func() {
-		cmdInfo(sf, "wall", true, map[string]int{"wall": 10, "cpu": 200, "alloc": 50}, 0, 5, 10)
+		cmdInfo(sf, "wall", true, map[string]int{"wall": 10, "cpu": 200, "alloc": 50}, 0, 5, 10, 0)
 	})
 
 	if !strings.Contains(out, "Event: wall") {
@@ -532,7 +567,7 @@ func TestCmdInfoExpand(t *testing.T) {
 	})
 
 	out := captureOutput(func() {
-		cmdInfo(sf, "cpu", false, nil, 2, 10, 20)
+		cmdInfo(sf, "cpu", false, nil, 2, 10, 20, 0)
 	})
 
 	// Should have drill-down sections for top 2 methods (C.c and B.b)
@@ -562,7 +597,7 @@ func TestCmdInfoExpandZero(t *testing.T) {
 	})
 
 	out := captureOutput(func() {
-		cmdInfo(sf, "cpu", false, nil, 0, 10, 20)
+		cmdInfo(sf, "cpu", false, nil, 0, 10, 20, 0)
 	})
 
 	if strings.Contains(out, "DRILL-DOWN") {
@@ -577,7 +612,7 @@ func TestCmdInfoExpandNoLineInfo(t *testing.T) {
 	})
 
 	out := captureOutput(func() {
-		cmdInfo(sf, "cpu", false, nil, 2, 10, 20)
+		cmdInfo(sf, "cpu", false, nil, 2, 10, 20, 0)
 	})
 
 	// Drill-down should appear but without lines section
@@ -2379,7 +2414,7 @@ func TestCmdInfoNoThreads(t *testing.T) {
 	})
 
 	out := captureOutput(func() {
-		cmdInfo(sf, "cpu", false, nil, 0, 10, 20)
+		cmdInfo(sf, "cpu", false, nil, 0, 10, 20, 0)
 	})
 
 	// Should NOT have THREADS section since no thread info
@@ -2732,7 +2767,7 @@ func TestJFRInfoAutoSelectWall(t *testing.T) {
 	}
 
 	out := captureOutput(func() {
-		cmdInfo(sf, eventType, true, eventCounts, 0, 10, 20)
+		cmdInfo(sf, eventType, true, eventCounts, 0, 10, 20, 0)
 	})
 	if !strings.Contains(out, "Event: wall") {
 		t.Errorf("expected 'Event: wall' in output, got:\n%s", out)
@@ -2758,7 +2793,7 @@ func TestJFRInfoAlsoAvailable(t *testing.T) {
 	eventCounts := parsed.eventCounts
 
 	out := captureOutput(func() {
-		cmdInfo(sf, "cpu", true, eventCounts, 0, 10, 20)
+		cmdInfo(sf, "cpu", true, eventCounts, 0, 10, 20, 0)
 	})
 	if !strings.Contains(out, "Also available:") {
 		t.Errorf("expected 'Also available:' in output, got:\n%s", out)

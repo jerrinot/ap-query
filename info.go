@@ -5,9 +5,11 @@ import (
 	"strings"
 )
 
-func cmdInfo(sf *stackFile, eventType string, isJFR bool, eventCounts map[string]int, expand, topThreads, topMethods int) {
-	// === Selected event ===
-	if isJFR && len(eventCounts) > 0 {
+func cmdInfo(sf *stackFile, eventType string, isJFR bool, eventCounts map[string]int, expand, topThreads, topMethods int, spanNanos int64) {
+	// === Header ===
+	if spanNanos > 0 {
+		fmt.Printf("Duration: %s  Samples: %d (%s)\n\n", formatDuration(spanNanos), sf.totalSamples, eventType)
+	} else if isJFR && len(eventCounts) > 0 {
 		fmt.Printf("Event: %s\n\n", eventType)
 	}
 

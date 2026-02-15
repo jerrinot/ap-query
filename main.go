@@ -609,7 +609,11 @@ func main() {
 		expand := f.intVal([]string{"expand"}, 3)
 		topThreads := f.intVal([]string{"top-threads"}, 10)
 		topMethods := f.intVal([]string{"top-methods"}, 20)
-		cmdInfo(sf, eventType, isJFR, eventCounts, expand, topThreads, topMethods)
+		var spanNanos int64
+		if parsed != nil {
+			spanNanos = parsed.spanNanos
+		}
+		cmdInfo(sf, eventType, isJFR, eventCounts, expand, topThreads, topMethods, spanNanos)
 
 	default:
 		usage()
