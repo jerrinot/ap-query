@@ -3573,3 +3573,172 @@ func TestJFRTraceMultiEventFile(t *testing.T) {
 		t.Error("expected non-empty output for both event types")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// TestCollapseRoundTrip
+// ---------------------------------------------------------------------------
+
+// aggregateStacks normalises a stackFile into map["thread||frame1;frame2;..."] → totalCount,
+// collapsing entries that differ only by line numbers.
+func aggregateStacks(sf *stackFile) map[string]int {
+	m := make(map[string]int, len(sf.stacks))
+	for i := range sf.stacks {
+		st := &sf.stacks[i]
+		key := st.thread + "||" + strings.Join(st.frames, ";")
+		m[key] += st.count
+	}
+	return m
+}
+
+func TestCollapseRoundTrip(t *testing.T) {
+	tests := []struct {
+		fixture string
+		event   string
+	}{
+		{"cpu.jfr", "cpu"},
+		{"wall.jfr", "wall"},
+		{"alloc.jfr", "alloc"},
+		{"lock.jfr", "lock"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.fixture, func(t *testing.T) {
+			// 1. Parse JFR directly
+			parsed, err := parseJFRData(jfrFixture(tt.fixture), singleJFREventType(tt.event))
+			if err != nil {
+				t.Fatalf("parseJFRData: %v", err)
+			}
+			jfrSF := parsed.stacksByEvent[tt.event]
+			if jfrSF == nil {
+				t.Fatalf("no stacks for event %q", tt.event)
+			}
+
+			// 2. Collapse to text
+			collapsed := captureOutput(func() { cmdCollapse(jfrSF) })
+
+			// 3. Parse collapsed text back
+			roundTripSF, err := parseCollapsed(strings.NewReader(collapsed))
+			if err != nil {
+				t.Fatalf("parseCollapsed: %v", err)
+			}
+
+			// 4. Aggregate both sides (normalises line-number-only differences)
+			jfrAgg := aggregateStacks(jfrSF)
+			rtAgg := aggregateStacks(roundTripSF)
+
+			// 5. Total sample counts must match
+			if jfrSF.totalSamples != roundTripSF.totalSamples {
+				t.Errorf("totalSamples mismatch: jfr=%d roundTrip=%d", jfrSF.totalSamples, roundTripSF.totalSamples)
+			}
+
+			// 6. Aggregated map sizes must match
+			if len(jfrAgg) != len(rtAgg) {
+				t.Errorf("aggregated key count mismatch: jfr=%d roundTrip=%d", len(jfrAgg), len(rtAgg))
+			}
+
+			// 7. Every key/count must match in both directions
+			for key, jfrCount := range jfrAgg {
+				rtCount, ok := rtAgg[key]
+				if !ok {
+					t.Errorf("key present in jfr but missing after round-trip: %q (count=%d)", key, jfrCount)
+					continue
+				}
+				if jfrCount != rtCount {
+					t.Errorf("count mismatch for %q: jfr=%d roundTrip=%d", key, jfrCount, rtCount)
+				}
+			}
+			for key, rtCount := range rtAgg {
+				if _, ok := jfrAgg[key]; !ok {
+					t.Errorf("key present after round-trip but missing in jfr: %q (count=%d)", key, rtCount)
+				}
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestParsePerfCollapsed — real collapsed stacks from Linux perf
+// ---------------------------------------------------------------------------
+
+func TestParsePerfCollapsed(t *testing.T) {
+	f, err := os.Open(filepath.Join("testdata", "perf.collapsed"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	sf, err := parseCollapsed(f)
+	if err != nil {
+		t.Fatalf("parseCollapsed: %v", err)
+	}
+
+	if len(sf.stacks) == 0 {
+		t.Fatal("expected non-empty stacks from perf fixture")
+	}
+
+	// Every stack must have at least one frame and a positive count.
+	for i, st := range sf.stacks {
+		if len(st.frames) == 0 {
+			t.Errorf("stack[%d]: no frames", i)
+		}
+		if st.count <= 0 {
+			t.Errorf("stack[%d]: count=%d, want >0", i, st.count)
+		}
+	}
+
+	// Total samples must equal the sum of individual counts.
+	sum := 0
+	for _, st := range sf.stacks {
+		sum += st.count
+	}
+	if sf.totalSamples != sum {
+		t.Errorf("totalSamples=%d, want sum of counts=%d", sf.totalSamples, sum)
+	}
+
+	// Perf collapsed stacks have no thread markers (process name is a plain
+	// frame, not "[thread]"), so every stack should have an empty thread.
+	for i, st := range sf.stacks {
+		if st.thread != "" {
+			t.Errorf("stack[%d]: unexpected thread=%q in perf data", i, st.thread)
+		}
+	}
+
+	// Spot-check: "dd" must appear as the root frame of every stack (the
+	// process name that stackcollapse-perf.pl prepends).
+	for i, st := range sf.stacks {
+		if st.frames[0] != "dd" {
+			t.Errorf("stack[%d]: root frame=%q, want \"dd\"", i, st.frames[0])
+		}
+	}
+
+	// Spot-check: kernel symbols must survive parsing intact.
+	found := false
+	for _, st := range sf.stacks {
+		for _, fr := range st.frames {
+			if fr == "chacha_permute" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Error("expected kernel frame \"chacha_permute\" in perf stacks")
+	}
+
+	// Commands must work on perf data. Smoke-test hot and tree.
+	hotOut := captureOutput(func() {
+		cmdHot(sf, 5, false, 0)
+	})
+	if !strings.Contains(hotOut, "SELF%") {
+		t.Errorf("hot output missing header, got:\n%s", hotOut)
+	}
+	if !strings.Contains(hotOut, "chacha_permute") {
+		t.Errorf("hot output missing expected top method, got:\n%s", hotOut)
+	}
+
+	treeOut := captureOutput(func() {
+		cmdTree(sf, "chacha_permute", 4, 1.0)
+	})
+	if !strings.Contains(treeOut, "chacha_permute") {
+		t.Errorf("tree output missing target method, got:\n%s", treeOut)
+	}
+}
