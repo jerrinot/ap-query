@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -39,6 +40,31 @@ func (sf *stackFile) filterByThread(thread string) *stackFile {
 			out.stacks = append(out.stacks, sf.stacks[i])
 			out.totalSamples += sf.stacks[i].count
 		}
+	}
+	return out
+}
+
+func (sf *stackFile) hideFrames(re *regexp.Regexp) *stackFile {
+	out := &stackFile{totalSamples: sf.totalSamples}
+	for i := range sf.stacks {
+		st := &sf.stacks[i]
+		var frames []string
+		var lines []uint32
+		for j, fr := range st.frames {
+			if !matchesHide(fr, re) {
+				frames = append(frames, fr)
+				lines = append(lines, st.lines[j])
+			}
+		}
+		if len(frames) == 0 {
+			continue
+		}
+		out.stacks = append(out.stacks, stack{
+			frames: frames,
+			lines:  lines,
+			count:  st.count,
+			thread: st.thread,
+		})
 	}
 	return out
 }

@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -76,6 +77,7 @@ Command-specific flags:
   --expand N                   Auto-expand top N hot methods in info (default: 3, 0=off).
   --top-threads N              Threads shown in info (default: 10, 0=all).
   --top-methods N              Hot methods shown in info (default: 20, 0=all).
+  --hide REGEX                 Remove frames matching regex from stacks before analysis (tree, trace, callers).
   --include-callers            Include caller frames in filter output.
 
 Examples:
@@ -86,6 +88,7 @@ Examples:
   ap-query callers profile.jfr -m HashMap.resize
   ap-query lines profile.jfr -m HashMap.resize
   ap-query hot profile.jfr -t "http-nio" --assert-below 15.0
+  ap-query tree profile.jfr --hide "Thread\.(run|start)" --depth 6
   ap-query diff before.jfr after.jfr --min-delta 0.5
   ap-query collapse profile.jfr --event wall | ap-query hot -
   echo "A;B;C 10" | ap-query hot -
@@ -381,6 +384,15 @@ func main() {
 		method := f.str("m", "method")
 		depth := f.intVal([]string{"depth"}, 4)
 		minPct := f.floatVal([]string{"min-pct"}, 1.0)
+		hide := f.str("hide")
+		if hide != "" {
+			re, err := regexp.Compile(hide)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error: invalid --hide regex: %v\n", err)
+				os.Exit(2)
+			}
+			sf = sf.hideFrames(re)
+		}
 		cmdTree(sf, method, depth, minPct)
 
 	case "trace":
@@ -388,6 +400,15 @@ func main() {
 		if method == "" {
 			fmt.Fprintln(os.Stderr, "error: -m/--method required")
 			os.Exit(2)
+		}
+		hide := f.str("hide")
+		if hide != "" {
+			re, err := regexp.Compile(hide)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error: invalid --hide regex: %v\n", err)
+				os.Exit(2)
+			}
+			sf = sf.hideFrames(re)
 		}
 		minPct := f.floatVal([]string{"min-pct"}, 0.5)
 		fqn := f.boolean("fqn")
@@ -398,6 +419,15 @@ func main() {
 		if method == "" {
 			fmt.Fprintln(os.Stderr, "error: -m/--method required")
 			os.Exit(2)
+		}
+		hide := f.str("hide")
+		if hide != "" {
+			re, err := regexp.Compile(hide)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error: invalid --hide regex: %v\n", err)
+				os.Exit(2)
+			}
+			sf = sf.hideFrames(re)
 		}
 		depth := f.intVal([]string{"depth"}, 4)
 		minPct := f.floatVal([]string{"min-pct"}, 1.0)
