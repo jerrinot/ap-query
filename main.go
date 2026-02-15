@@ -84,7 +84,7 @@ Command-specific flags:
   --include-callers            Include caller frames in filter output.
   --buckets N                  Number of time buckets for timeline (default: auto ~20).
   --resolution DURATION        Fixed bucket width for timeline (e.g. 1s, 500ms). Overrides --buckets.
-  --top-method                 Annotate each timeline bucket with the top method.
+  --no-top-method              Omit per-bucket top method annotation from timeline (shown by default).
 
 Examples:
   ap-query info profile.jfr
@@ -128,7 +128,7 @@ func parseFlags(args []string) flags {
 			key := strings.TrimLeft(a, "-")
 			// Known boolean flags
 			switch key {
-			case "fqn", "include-callers", "force", "project", "claude", "codex", "stdout", "top-method":
+			case "fqn", "include-callers", "force", "project", "claude", "codex", "stdout", "top-method", "no-top-method":
 				f.bools[key] = true
 				i++
 				continue
@@ -607,7 +607,7 @@ func main() {
 		buckets := f.intVal([]string{"buckets"}, 0)
 		resolution := f.str("resolution")
 		method := f.str("m", "method")
-		topMethod := f.boolean("top-method")
+		topMethod := !f.boolean("no-top-method")
 		cmdTimeline(parsed, eventType, buckets, resolution, method, topMethod, thread, fromNanos, toNanos)
 
 	case "info":

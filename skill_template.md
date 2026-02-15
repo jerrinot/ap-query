@@ -66,7 +66,7 @@ Combine with `timeline` to first identify spikes, then zoom in with `--from`/`--
 - `--buckets N` — number of time buckets (default: auto ~20).
 - `--resolution DURATION` — fixed bucket width (e.g. `1s`, `500ms`). Overrides `--buckets`.
 - `-m METHOD` / `--method METHOD` — only count samples where the stack contains METHOD.
-- `--top-method` — annotate each bucket with the top method by self-time.
+- `--no-top-method` — omit per-bucket top method annotation (shown by default).
 - Time labels automatically increase precision for sub-second buckets (for example, `4m44.000s-4m44.001s` at `--resolution 1ms`).
 
 ## Threads
