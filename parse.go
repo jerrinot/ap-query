@@ -111,92 +111,59 @@ type aggValue struct {
 	count  int
 }
 
-func parseJFR(path, eventType string) (*stackFile, error) {
-	buf, err := readJFRBytes(path)
-	if err != nil {
-		return nil, err
+type parsedJFR struct {
+	eventCounts   map[string]int
+	stacksByEvent map[string]*stackFile
+}
+
+func allJFREventTypes() map[string]struct{} {
+	return map[string]struct{}{
+		"cpu":   {},
+		"wall":  {},
+		"alloc": {},
+		"lock":  {},
+	}
+}
+
+func singleJFREventType(eventType string) map[string]struct{} {
+	return map[string]struct{}{eventType: {}}
+}
+
+func appendJFRStackSample(p *parser.Parser, agg map[stackKey]*aggValue, stRef types.StackTraceRef, thRef types.ThreadRef) {
+	st := p.GetStacktrace(stRef)
+	if st == nil || len(st.Frames) == 0 {
+		return
 	}
 
-	p := parser.NewParser(buf, parser.Options{})
-	agg := make(map[stackKey]*aggValue)
+	// JFR frames are leaf-first; reverse to root-first for collapsed format.
+	n := len(st.Frames)
+	parts := make([]string, n)
+	lineNums := make([]uint32, n)
+	for i, f := range st.Frames {
+		parts[n-1-i] = resolveFrame(p, f)
+		lineNums[n-1-i] = f.LineNumber
+	}
 
-	for {
-		typ, err := p.ParseEvent()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, fmt.Errorf("parse event: %w", err)
-		}
-
-		var stRef types.StackTraceRef
-		var thRef types.ThreadRef
-		var match bool
-
-		switch {
-		case eventType == "cpu" && typ == p.TypeMap.T_EXECUTION_SAMPLE:
-			stRef = p.ExecutionSample.StackTrace
-			thRef = p.ExecutionSample.SampledThread
-			match = true
-		case eventType == "wall" && typ == p.TypeMap.T_WALL_CLOCK_SAMPLE:
-			stRef = p.WallClockSample.StackTrace
-			thRef = p.WallClockSample.SampledThread
-			match = true
-		case eventType == "alloc" && typ == p.TypeMap.T_ALLOC_IN_NEW_TLAB:
-			stRef = p.ObjectAllocationInNewTLAB.StackTrace
-			thRef = p.ObjectAllocationInNewTLAB.EventThread
-			match = true
-		case eventType == "alloc" && typ == p.TypeMap.T_ALLOC_OUTSIDE_TLAB:
-			stRef = p.ObjectAllocationOutsideTLAB.StackTrace
-			thRef = p.ObjectAllocationOutsideTLAB.EventThread
-			match = true
-		case eventType == "alloc" && typ == p.TypeMap.T_ALLOC_SAMPLE:
-			stRef = p.ObjectAllocationSample.StackTrace
-			thRef = p.ObjectAllocationSample.EventThread
-			match = true
-		case eventType == "lock" && typ == p.TypeMap.T_MONITOR_ENTER:
-			stRef = p.JavaMonitorEnter.StackTrace
-			thRef = p.JavaMonitorEnter.EventThread
-			match = true
-		}
-
-		if !match {
-			continue
-		}
-
-		st := p.GetStacktrace(stRef)
-		if st == nil || len(st.Frames) == 0 {
-			continue
-		}
-
-		// JFR frames are leaf-first; reverse to root-first for collapsed format.
-		n := len(st.Frames)
-		parts := make([]string, n)
-		lineNums := make([]uint32, n)
-		for i, f := range st.Frames {
-			parts[n-1-i] = resolveFrame(p, f)
-			lineNums[n-1-i] = f.LineNumber
-		}
-
-		// Build key that includes line numbers for differentiation.
-		keyParts := make([]string, n)
-		for i := 0; i < n; i++ {
-			if lineNums[i] > 0 {
-				keyParts[i] = fmt.Sprintf("%s:%d", parts[i], lineNums[i])
-			} else {
-				keyParts[i] = parts[i]
-			}
-		}
-
-		thread := resolveThread(p, thRef)
-		key := stackKey{frames: strings.Join(keyParts, ";"), thread: thread}
-		if v, ok := agg[key]; ok {
-			v.count++
+	// Build key that includes line numbers for differentiation.
+	keyParts := make([]string, n)
+	for i := 0; i < n; i++ {
+		if lineNums[i] > 0 {
+			keyParts[i] = fmt.Sprintf("%s:%d", parts[i], lineNums[i])
 		} else {
-			agg[key] = &aggValue{frames: parts, lines: lineNums, count: 1}
+			keyParts[i] = parts[i]
 		}
 	}
 
+	thread := resolveThread(p, thRef)
+	key := stackKey{frames: strings.Join(keyParts, ";"), thread: thread}
+	if v, ok := agg[key]; ok {
+		v.count++
+	} else {
+		agg[key] = &aggValue{frames: parts, lines: lineNums, count: 1}
+	}
+}
+
+func buildStackFile(agg map[stackKey]*aggValue) *stackFile {
 	sf := &stackFile{}
 	for k, v := range agg {
 		sf.stacks = append(sf.stacks, stack{
@@ -207,7 +174,81 @@ func parseJFR(path, eventType string) (*stackFile, error) {
 		})
 		sf.totalSamples += v.count
 	}
-	return sf, nil
+	return sf
+}
+
+func parseJFRData(path string, stackEvents map[string]struct{}) (*parsedJFR, error) {
+	buf, err := readJFRBytes(path)
+	if err != nil {
+		return nil, err
+	}
+
+	p := parser.NewParser(buf, parser.Options{})
+	counts := make(map[string]int)
+	aggByEvent := make(map[string]map[stackKey]*aggValue, len(stackEvents))
+	for eventType := range stackEvents {
+		aggByEvent[eventType] = make(map[stackKey]*aggValue)
+	}
+
+	for {
+		typ, err := p.ParseEvent()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("parse event: %w", err)
+		}
+
+		var eventType string
+		var stRef types.StackTraceRef
+		var thRef types.ThreadRef
+
+		switch typ {
+		case p.TypeMap.T_EXECUTION_SAMPLE:
+			eventType = "cpu"
+			stRef = p.ExecutionSample.StackTrace
+			thRef = p.ExecutionSample.SampledThread
+		case p.TypeMap.T_WALL_CLOCK_SAMPLE:
+			eventType = "wall"
+			stRef = p.WallClockSample.StackTrace
+			thRef = p.WallClockSample.SampledThread
+		case p.TypeMap.T_ALLOC_IN_NEW_TLAB:
+			eventType = "alloc"
+			stRef = p.ObjectAllocationInNewTLAB.StackTrace
+			thRef = p.ObjectAllocationInNewTLAB.EventThread
+		case p.TypeMap.T_ALLOC_OUTSIDE_TLAB:
+			eventType = "alloc"
+			stRef = p.ObjectAllocationOutsideTLAB.StackTrace
+			thRef = p.ObjectAllocationOutsideTLAB.EventThread
+		case p.TypeMap.T_ALLOC_SAMPLE:
+			eventType = "alloc"
+			stRef = p.ObjectAllocationSample.StackTrace
+			thRef = p.ObjectAllocationSample.EventThread
+		case p.TypeMap.T_MONITOR_ENTER:
+			eventType = "lock"
+			stRef = p.JavaMonitorEnter.StackTrace
+			thRef = p.JavaMonitorEnter.EventThread
+		}
+		if eventType == "" {
+			continue
+		}
+
+		counts[eventType]++
+		agg, ok := aggByEvent[eventType]
+		if !ok {
+			continue
+		}
+		appendJFRStackSample(p, agg, stRef, thRef)
+	}
+
+	stacksByEvent := make(map[string]*stackFile, len(aggByEvent))
+	for eventType, agg := range aggByEvent {
+		stacksByEvent[eventType] = buildStackFile(agg)
+	}
+	return &parsedJFR{
+		eventCounts:   counts,
+		stacksByEvent: stacksByEvent,
+	}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -359,8 +400,15 @@ func isJFRPath(path string) bool {
 
 func openInput(path, eventType string) (sf *stackFile, isJFR bool, err error) {
 	if isJFRPath(path) {
-		sf, err = parseJFR(path, eventType)
-		return sf, true, err
+		parsed, err := parseJFRData(path, singleJFREventType(eventType))
+		if err != nil {
+			return nil, true, err
+		}
+		sf = parsed.stacksByEvent[eventType]
+		if sf == nil {
+			sf = &stackFile{}
+		}
+		return sf, true, nil
 	}
 	rc, err := openReader(path)
 	if err != nil {
@@ -369,39 +417,4 @@ func openInput(path, eventType string) (sf *stackFile, isJFR bool, err error) {
 	defer rc.Close()
 	sf, err = parseCollapsed(rc)
 	return sf, false, err
-}
-
-// ---------------------------------------------------------------------------
-// Discover available event types
-// ---------------------------------------------------------------------------
-
-func discoverEvents(path string) (map[string]int, error) {
-	buf, err := readJFRBytes(path)
-	if err != nil {
-		return nil, err
-	}
-
-	p := parser.NewParser(buf, parser.Options{})
-	counts := make(map[string]int)
-
-	for {
-		typ, err := p.ParseEvent()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, err
-		}
-		switch typ {
-		case p.TypeMap.T_EXECUTION_SAMPLE:
-			counts["cpu"]++
-		case p.TypeMap.T_WALL_CLOCK_SAMPLE:
-			counts["wall"]++
-		case p.TypeMap.T_ALLOC_IN_NEW_TLAB, p.TypeMap.T_ALLOC_OUTSIDE_TLAB, p.TypeMap.T_ALLOC_SAMPLE:
-			counts["alloc"]++
-		case p.TypeMap.T_MONITOR_ENTER:
-			counts["lock"]++
-		}
-	}
-	return counts, nil
 }

@@ -2459,10 +2459,11 @@ func TestJFRDiscoverEventsSingle(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.file, func(t *testing.T) {
-			counts, err := discoverEvents(jfrFixture(tt.file))
+			parsed, err := parseJFRData(jfrFixture(tt.file), nil)
 			if err != nil {
-				t.Fatalf("discoverEvents(%s): %v", tt.file, err)
+				t.Fatalf("parseJFRData(%s): %v", tt.file, err)
 			}
+			counts := parsed.eventCounts
 			if len(counts) != 1 {
 				t.Errorf("expected exactly 1 event type, got %d: %v", len(counts), counts)
 			}
@@ -2478,10 +2479,11 @@ func TestJFRDiscoverEventsSingle(t *testing.T) {
 }
 
 func TestJFRDiscoverEventsMulti(t *testing.T) {
-	counts, err := discoverEvents(jfrFixture("multi.jfr"))
+	parsed, err := parseJFRData(jfrFixture("multi.jfr"), nil)
 	if err != nil {
-		t.Fatalf("discoverEvents: %v", err)
+		t.Fatalf("parseJFRData: %v", err)
 	}
+	counts := parsed.eventCounts
 	if len(counts) < 2 {
 		t.Errorf("expected >=2 event types in multi.jfr, got %d: %v", len(counts), counts)
 	}
@@ -2492,11 +2494,39 @@ func TestJFRDiscoverEventsMulti(t *testing.T) {
 	}
 }
 
-func TestJFRBranchMissesMapsToCPU(t *testing.T) {
-	counts, err := discoverEvents(jfrFixture("branch-misses.jfr"))
+func TestParseJFRDataAllEventsMatchesSingleEventParsing(t *testing.T) {
+	path := jfrFixture("multi.jfr")
+
+	parsed, err := parseJFRData(path, allJFREventTypes())
 	if err != nil {
-		t.Fatalf("discoverEvents: %v", err)
+		t.Fatalf("parseJFRData: %v", err)
 	}
+
+	for _, eventType := range []string{"cpu", "wall", "alloc", "lock"} {
+		single, err := parseJFRData(path, singleJFREventType(eventType))
+		if err != nil {
+			t.Fatalf("parseJFRData(%s): %v", eventType, err)
+		}
+		want := single.stacksByEvent[eventType]
+		if want == nil {
+			want = &stackFile{}
+		}
+		got := parsed.stacksByEvent[eventType]
+		if got == nil {
+			got = &stackFile{}
+		}
+		if got.totalSamples != want.totalSamples {
+			t.Errorf("%s totalSamples=%d, want %d", eventType, got.totalSamples, want.totalSamples)
+		}
+	}
+}
+
+func TestJFRBranchMissesMapsToCPU(t *testing.T) {
+	parsed, err := parseJFRData(jfrFixture("branch-misses.jfr"), nil)
+	if err != nil {
+		t.Fatalf("parseJFRData: %v", err)
+	}
+	counts := parsed.eventCounts
 	if _, ok := counts["cpu"]; !ok {
 		t.Errorf("expected 'cpu' event in branch-misses.jfr, got %v", counts)
 	}
@@ -2518,10 +2548,11 @@ func TestJFRInfoAutoSelectWall(t *testing.T) {
 	}
 
 	// Simulate auto-select: discover events, find best
-	eventCounts, err := discoverEvents(path)
+	parsed, err := parseJFRData(path, nil)
 	if err != nil {
-		t.Fatalf("discoverEvents: %v", err)
+		t.Fatalf("parseJFRData: %v", err)
 	}
+	eventCounts := parsed.eventCounts
 	eventType := "cpu"
 	if eventCounts[eventType] == 0 {
 		best, bestN := "", 0
@@ -2563,10 +2594,11 @@ func TestJFRInfoAlsoAvailable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openInput: %v", err)
 	}
-	eventCounts, err := discoverEvents(path)
+	parsed, err := parseJFRData(path, nil)
 	if err != nil {
-		t.Fatalf("discoverEvents: %v", err)
+		t.Fatalf("parseJFRData: %v", err)
 	}
+	eventCounts := parsed.eventCounts
 
 	out := captureOutput(func() {
 		cmdInfo(sf, "cpu", true, eventCounts, 0, 10, 20)

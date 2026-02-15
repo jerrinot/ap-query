@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 )
 
@@ -58,14 +57,8 @@ func cmdInfo(sf *stackFile, eventType string, isJFR bool, eventCounts map[string
 
 	// === Other available events ===
 	if isJFR && len(eventCounts) > 1 {
-		var others []string
-		for name, count := range eventCounts {
-			if name != eventType {
-				others = append(others, fmt.Sprintf("%s (%d events)", name, count))
-			}
-		}
+		others := formatEventList(eventCounts, eventType)
 		if len(others) > 0 {
-			sort.Strings(others)
 			fmt.Printf("\nAlso available: %s\n", strings.Join(others, ", "))
 		}
 	}
