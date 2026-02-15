@@ -79,17 +79,21 @@ distribution across threads to help pick the right filter.
 - Always start with ` + "`info`" + `. Quote specific numbers. Mention thread if ` + "`-t`" + ` was used.
 `
 
-// skillDir returns the skill directory for an agent relative to a base dir.
-// Codex uses .agents for project-local installs, .codex for global installs.
-func skillDir(agent string, project bool) string {
+// skillDir returns the absolute skill directory for an agent.
+// Codex uses .agents for project-local installs, .codex (or $CODEX_HOME) for global.
+func skillDir(agent, baseDir string, project bool) string {
 	switch agent {
 	case "claude":
-		return filepath.Join(".claude", "skills", "jfr")
+		return filepath.Join(baseDir, ".claude", "skills", "jfr")
 	case "codex":
 		if project {
-			return filepath.Join(".agents", "skills", "jfr")
+			return filepath.Join(baseDir, ".agents", "skills", "jfr")
 		}
-		return filepath.Join(".codex", "skills", "jfr")
+		base := filepath.Join(baseDir, ".codex")
+		if h := os.Getenv("CODEX_HOME"); h != "" {
+			base = h
+		}
+		return filepath.Join(base, "skills", "jfr")
 	default:
 		panic("unknown agent: " + agent)
 	}
@@ -199,10 +203,8 @@ func resolveTargets(baseDir string, claude, codex, project bool) []string {
 	// Auto-detect: check which agent root dirs exist
 	var targets []string
 	for _, agent := range []string{"claude", "codex"} {
-		// Check for the agent's root dir (e.g. ~/.claude, ~/.codex, or .agents for project)
-		root := skillDir(agent, project)
-		// The root config dir is the first path component (e.g. ".claude", ".codex", or ".agents")
-		configDir := filepath.Join(baseDir, strings.SplitN(root, string(filepath.Separator), 2)[0])
+		// Config root is 2 levels above the skill dir (above skills/jfr)
+		configDir := filepath.Dir(filepath.Dir(skillDir(agent, baseDir, project)))
 		if _, err := os.Stat(configDir); err == nil {
 			targets = append(targets, agent)
 		}
@@ -211,7 +213,7 @@ func resolveTargets(baseDir string, claude, codex, project bool) []string {
 }
 
 func writeSkill(baseDir, agent, content string, force, project bool) {
-	dir := filepath.Join(baseDir, skillDir(agent, project))
+	dir := skillDir(agent, baseDir, project)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		fmt.Fprintf(os.Stderr, "error: cannot create directory %s: %v\n", dir, err)
 		os.Exit(1)

@@ -1232,6 +1232,19 @@ func TestResolveTargetsAutoDetect(t *testing.T) {
 		}
 	})
 
+	// Global scope: CODEX_HOME overrides ~/.codex
+	t.Run("global_codex_home", func(t *testing.T) {
+		dir := t.TempDir()
+		codexHome := t.TempDir()
+		t.Setenv("CODEX_HOME", codexHome)
+
+		// CODEX_HOME dir exists → detects codex
+		targets := resolveTargets(dir, false, false, false)
+		if len(targets) != 1 || targets[0] != "codex" {
+			t.Errorf("expected [codex] with CODEX_HOME, got %v", targets)
+		}
+	})
+
 	// Project scope: codex uses .agents
 	t.Run("project", func(t *testing.T) {
 		dir := t.TempDir()
@@ -1813,6 +1826,23 @@ func TestWriteSkillCodexProject(t *testing.T) {
 	}
 	if string(data) != "project codex" {
 		t.Errorf("content = %q, want 'project codex'", data)
+	}
+}
+
+func TestWriteSkillCodexHome(t *testing.T) {
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+
+	baseDir := t.TempDir() // home dir, should be ignored for codex global
+	writeSkill(baseDir, "codex", "codex home", false, false)
+
+	path := filepath.Join(codexHome, "skills", "jfr", "SKILL.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("skill file not found: %v", err)
+	}
+	if string(data) != "codex home" {
+		t.Errorf("content = %q, want 'codex home'", data)
 	}
 }
 
