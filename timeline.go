@@ -218,22 +218,22 @@ func cmdTimeline(parsed *parsedJFR, eventType string,
 		if topMethod && count > 0 {
 			topName := ""
 			topCount := 0
-			selfCounts := make(map[string]int)
+			bucketSelfCounts := make(map[string]int)
 			for _, eventIdx := range perBucket[i].eventIdxs {
 				ev := events[eventIdx]
 				if len(ev.frames) == 0 {
 					continue
 				}
 				leaf := displayName(ev.frames[len(ev.frames)-1], false)
-				newCount := selfCounts[leaf] + ev.weight
-				selfCounts[leaf] = newCount
+				newCount := bucketSelfCounts[leaf] + ev.weight
+				bucketSelfCounts[leaf] = newCount
 				if newCount > topCount {
 					topCount = newCount
 					topName = leaf
 				}
 			}
 			if topName != "" && topCount > 0 {
-				pct := 100.0 * float64(topCount) / float64(count)
+				pct := pctOf(topCount, count)
 				topMethodStr = fmt.Sprintf("  %s (%.0f%%)", topName, pct)
 			}
 		}

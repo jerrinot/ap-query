@@ -7,17 +7,11 @@ import (
 )
 
 func selfPcts(sf *stackFile, fqn bool) map[string]float64 {
-	counts := make(map[string]int)
-	for i := range sf.stacks {
-		st := &sf.stacks[i]
-		if len(st.frames) > 0 {
-			counts[displayName(st.frames[len(st.frames)-1], fqn)] += st.count
-		}
-	}
+	counts := selfCounts(sf, fqn)
 	pcts := make(map[string]float64)
 	if sf.totalSamples > 0 {
 		for name, c := range counts {
-			pcts[name] = 100.0 * float64(c) / float64(sf.totalSamples)
+			pcts[name] = pctOf(c, sf.totalSamples)
 		}
 	}
 	return pcts

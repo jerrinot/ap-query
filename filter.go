@@ -16,11 +16,8 @@ func cmdFilter(sf *stackFile, method string, includeCallers bool) {
 				} else {
 					outFrames = st.frames[j:]
 				}
-				threadPrefix := ""
-				if st.thread != "" {
-					threadPrefix = fmt.Sprintf("[%s];", st.thread)
-				}
-				fmt.Printf("%s%s %d\n", threadPrefix, strings.Join(outFrames, ";"), st.count)
+				tp := threadPrefix(st.thread)
+				fmt.Printf("%s%s %d\n", tp, strings.Join(outFrames, ";"), st.count)
 				break
 			}
 		}

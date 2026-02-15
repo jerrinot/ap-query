@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 )
@@ -38,4 +39,15 @@ func truncate(n, top int) int {
 		return top
 	}
 	return n
+}
+
+func pctOf(n, total int) float64 {
+	return 100.0 * float64(n) / float64(total)
+}
+
+func threadPrefix(thread string) string {
+	if thread == "" {
+		return ""
+	}
+	return fmt.Sprintf("[%s];", thread)
 }

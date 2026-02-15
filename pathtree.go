@@ -103,7 +103,7 @@ func (pt *pathTree) printTree(method string, maxDepth int, minPct float64, showS
 	var walk func(prefix string, depth, indent int)
 	walk = func(prefix string, depth, indent int) {
 		samples := pt.samples[prefix]
-		pct := 100.0 * float64(samples) / float64(pt.totalSamples)
+		pct := pctOf(samples, pt.totalSamples)
 		if pct < minPct {
 			return
 		}
@@ -113,7 +113,7 @@ func (pt *pathTree) printTree(method string, maxDepth int, minPct float64, showS
 		selfSuffix := ""
 		if showSelf {
 			if selfCt := pt.selfSamples[prefix]; selfCt > 0 {
-				selfPct := 100.0 * float64(selfCt) / float64(pt.totalSamples)
+				selfPct := pctOf(selfCt, pt.totalSamples)
 				if selfPct >= minPct {
 					selfSuffix = fmt.Sprintf("  ← self=%.1f%%", selfPct)
 				}

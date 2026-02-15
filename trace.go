@@ -76,7 +76,7 @@ func childrenAboveMinPct(pt *pathTree, prefix string, minPct float64) []traceChi
 	depth := strings.Count(prefix, ";") + 1
 	for key, cnt := range pt.samples {
 		if strings.HasPrefix(key, pfx) && strings.Count(key, ";") == depth {
-			childPct := 100.0 * float64(cnt) / float64(pt.totalSamples)
+			childPct := pctOf(cnt, pt.totalSamples)
 			if childPct >= minPct {
 				parts := strings.Split(key, ";")
 				children = append(children, traceChild{key, parts[len(parts)-1], cnt})
@@ -102,7 +102,7 @@ func traceHottestPath(pt *pathTree, rootKey string, minPct float64) {
 
 	for {
 		samples := pt.samples[prefix]
-		pct := 100.0 * float64(samples) / float64(pt.totalSamples)
+		pct := pctOf(samples, pt.totalSamples)
 		if pct < minPct {
 			break
 		}
@@ -123,7 +123,7 @@ func traceHottestPath(pt *pathTree, rootKey string, minPct float64) {
 		// Leaf: append self-time annotation.
 		if isLeaf {
 			selfCt := pt.selfSamples[prefix]
-			selfPct := 100.0 * float64(selfCt) / float64(pt.totalSamples)
+			selfPct := pctOf(selfCt, pt.totalSamples)
 			if selfCt > 0 && selfPct >= minPct {
 				line += fmt.Sprintf("  ← self=%.1f%%", selfPct)
 			}
@@ -139,7 +139,7 @@ func traceHottestPath(pt *pathTree, rootKey string, minPct float64) {
 		siblingAnnotation = ""
 		if len(children) > 1 {
 			next := children[1]
-			nextPct := 100.0 * float64(next.samples) / float64(pt.totalSamples)
+			nextPct := pctOf(next.samples, pt.totalSamples)
 			n := len(children) - 1
 			word := "siblings"
 			if n == 1 {

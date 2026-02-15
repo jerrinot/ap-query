@@ -72,7 +72,7 @@ func cmdLines(sf *stackFile, method string, top int, fqn bool) error {
 
 	fmt.Printf("%-40s %9s %7s\n", "SOURCE:LINE", "SAMPLES", "PCT")
 	for _, e := range ranked {
-		pct := 100.0 * float64(e.samples) / float64(sf.totalSamples)
+		pct := pctOf(e.samples, sf.totalSamples)
 		loc := fmt.Sprintf("%s:%d", e.name, e.line)
 		fmt.Printf("%-40s %9d %6.1f%%\n", loc, e.samples, pct)
 	}

@@ -46,11 +46,11 @@ func cmdThreads(sf *stackFile, top int) {
 
 	fmt.Printf("%-30s %9s %7s\n", "THREAD", "SAMPLES", "PCT")
 	for _, e := range ranked {
-		pct := 100.0 * float64(e.samples) / float64(sf.totalSamples)
+		pct := pctOf(e.samples, sf.totalSamples)
 		fmt.Printf("%-30s %9d %6.1f%%\n", e.name, e.samples, pct)
 	}
 	if noThread > 0 {
-		pct := 100.0 * float64(noThread) / float64(sf.totalSamples)
+		pct := pctOf(noThread, sf.totalSamples)
 		fmt.Printf("%-30s %9d %6.1f%%\n", "(no thread info)", noThread, pct)
 	}
 }

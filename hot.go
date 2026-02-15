@@ -11,19 +11,27 @@ type hotEntry struct {
 	totalCount int
 }
 
+func selfCounts(sf *stackFile, fqn bool) map[string]int {
+	counts := make(map[string]int)
+	for i := range sf.stacks {
+		st := &sf.stacks[i]
+		if len(st.frames) > 0 {
+			counts[displayName(st.frames[len(st.frames)-1], fqn)] += st.count
+		}
+	}
+	return counts
+}
+
 func computeHot(sf *stackFile, fqn bool) []hotEntry {
 	if sf.totalSamples == 0 {
 		return nil
 	}
 
-	selfCounts := make(map[string]int)
+	sc := selfCounts(sf, fqn)
 	totalCounts := make(map[string]int)
 
 	for i := range sf.stacks {
 		st := &sf.stacks[i]
-		if len(st.frames) > 0 {
-			selfCounts[displayName(st.frames[len(st.frames)-1], fqn)] += st.count
-		}
 		seen := make(map[string]bool)
 		for _, fr := range st.frames {
 			key := displayName(fr, fqn)
@@ -35,11 +43,11 @@ func computeHot(sf *stackFile, fqn bool) []hotEntry {
 	}
 
 	var ranked []hotEntry
-	for name, sc := range selfCounts {
-		ranked = append(ranked, hotEntry{name, sc, totalCounts[name]})
+	for name, s := range sc {
+		ranked = append(ranked, hotEntry{name, s, totalCounts[name]})
 	}
 	for name, tc := range totalCounts {
-		if _, hasSelf := selfCounts[name]; !hasSelf {
+		if _, hasSelf := sc[name]; !hasSelf {
 			ranked = append(ranked, hotEntry{name, 0, tc})
 		}
 	}
@@ -57,8 +65,8 @@ func printHotTables(ranked []hotEntry, top, totalSamples int, showTopN bool) {
 	}
 	fmt.Printf("%-50s %7s %7s %9s\n", "METHOD", "SELF%", "TOTAL%", "SAMPLES")
 	for _, e := range selfRanked {
-		sp := 100.0 * float64(e.selfCount) / float64(totalSamples)
-		tp := 100.0 * float64(e.totalCount) / float64(totalSamples)
+		sp := pctOf(e.selfCount, totalSamples)
+		tp := pctOf(e.totalCount, totalSamples)
 		fmt.Printf("%-50s %6.1f%% %6.1f%% %9d\n", e.name, sp, tp, e.selfCount)
 	}
 
@@ -75,8 +83,8 @@ func printHotTables(ranked []hotEntry, top, totalSamples int, showTopN bool) {
 	}
 	fmt.Printf("%-50s %7s %7s %9s\n", "METHOD", "SELF%", "TOTAL%", "SAMPLES")
 	for _, e := range totalRanked {
-		sp := 100.0 * float64(e.selfCount) / float64(totalSamples)
-		tp := 100.0 * float64(e.totalCount) / float64(totalSamples)
+		sp := pctOf(e.selfCount, totalSamples)
+		tp := pctOf(e.totalCount, totalSamples)
 		fmt.Printf("%-50s %6.1f%% %6.1f%% %9d\n", e.name, sp, tp, e.totalCount)
 	}
 }
@@ -91,7 +99,7 @@ func cmdHot(sf *stackFile, top int, fqn bool, assertBelow float64) error {
 
 	// assert-below stays on self-time section only
 	if assertBelow > 0 && len(ranked) > 0 {
-		selfPct := 100.0 * float64(ranked[0].selfCount) / float64(sf.totalSamples)
+		selfPct := pctOf(ranked[0].selfCount, sf.totalSamples)
 		if selfPct >= assertBelow {
 			return fmt.Errorf("ASSERT FAILED: %s self=%.1f%% >= threshold %.1f%%", ranked[0].name, selfPct, assertBelow)
 		}
