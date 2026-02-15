@@ -10,6 +10,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TESTDATA_DIR="$(dirname "$SCRIPT_DIR")"
 WORKLOAD="$SCRIPT_DIR/Workload.java"
+MULTICHUNK_WORKLOAD="$SCRIPT_DIR/MultiChunkWorkload.java"
 
 # Find libasyncProfiler.so
 if [[ $# -ge 1 ]]; then
@@ -41,19 +42,20 @@ echo "Using async-profiler: $AP_LIB"
 echo "Output directory: $TESTDATA_DIR"
 
 # Compile workload
-echo "Compiling Workload.java..."
-javac -d "$SCRIPT_DIR" "$WORKLOAD"
+echo "Compiling workload generators..."
+javac -d "$SCRIPT_DIR" "$WORKLOAD" "$MULTICHUNK_WORKLOAD"
 
 # Helper: profile with given agent options and output file
 profile() {
     local outfile="$1"
     local agent_opts="$2"
+    local main_class="${3:-Workload}"
     local basename
     basename="$(basename "$outfile")"
 
-    echo "Generating $basename ($agent_opts)..."
+    echo "Generating $basename ($main_class, $agent_opts)..."
     java -agentpath:"$AP_LIB"="$agent_opts" \
-         -cp "$SCRIPT_DIR" Workload
+         -cp "$SCRIPT_DIR" "$main_class"
 
     if [[ ! -f "$outfile" ]]; then
         echo "ERROR: $outfile was not created"
@@ -77,6 +79,9 @@ profile "$TESTDATA_DIR/branch-misses.jfr" "start,event=branch-misses,file=$TESTD
 # Multi-event: cpu + alloc + lock + wall
 profile "$TESTDATA_DIR/multi.jfr" "start,cpu,alloc,lock,wall,file=$TESTDATA_DIR/multi.jfr"
 
+# Multi-chunk CPU fixture (5s chunks, alternating hot methods every 1s)
+profile "$TESTDATA_DIR/multichunk.jfr" "start,event=cpu,file=$TESTDATA_DIR/multichunk.jfr,chunktime=5,chunksize=262144" "MultiChunkWorkload"
+
 # Gzip files larger than 500KB
 echo ""
 echo "Checking file sizes..."
@@ -95,7 +100,8 @@ echo ""
 echo "Verifying fixtures..."
 AP_QUERY="${AP_QUERY:-go run $SCRIPT_DIR/../..}"
 for f in "$TESTDATA_DIR"/cpu.jfr* "$TESTDATA_DIR"/wall.jfr* "$TESTDATA_DIR"/alloc.jfr* \
-         "$TESTDATA_DIR"/lock.jfr* "$TESTDATA_DIR"/branch-misses.jfr* "$TESTDATA_DIR"/multi.jfr*; do
+         "$TESTDATA_DIR"/lock.jfr* "$TESTDATA_DIR"/branch-misses.jfr* "$TESTDATA_DIR"/multi.jfr* \
+         "$TESTDATA_DIR"/multichunk.jfr*; do
     if [[ -f "$f" ]]; then
         echo "  $(basename "$f"):"
         $AP_QUERY events "$f" 2>&1 | sed 's/^/    /'

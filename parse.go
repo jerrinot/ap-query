@@ -116,6 +116,108 @@ type parsedJFR struct {
 	stacksByEvent map[string]*stackFile
 }
 
+// cachedStackTrace stores a resolved stacktrace in root->leaf order plus
+// the prebuilt aggregation key including line numbers.
+type cachedStackTrace struct {
+	frames []string
+	lines  []uint32
+	key    string
+}
+
+func digitsUint32(n uint32) int {
+	switch {
+	case n < 10:
+		return 1
+	case n < 100:
+		return 2
+	case n < 1000:
+		return 3
+	case n < 10000:
+		return 4
+	case n < 100000:
+		return 5
+	case n < 1000000:
+		return 6
+	case n < 10000000:
+		return 7
+	case n < 100000000:
+		return 8
+	case n < 1000000000:
+		return 9
+	default:
+		return 10
+	}
+}
+
+func buildStackKeyWithLines(frames []string, lines []uint32) string {
+	if len(frames) == 0 {
+		return ""
+	}
+
+	size := len(frames) - 1 // semicolons
+	for i := range frames {
+		size += len(frames[i])
+		if lines[i] > 0 {
+			size += 1 + digitsUint32(lines[i]) // ":" + decimal line number
+		}
+	}
+
+	var b strings.Builder
+	b.Grow(size)
+	var numBuf [10]byte
+	for i := range frames {
+		if i > 0 {
+			b.WriteByte(';')
+		}
+		b.WriteString(frames[i])
+		if lines[i] > 0 {
+			b.WriteByte(':')
+			n := len(numBuf)
+			v := lines[i]
+			for {
+				n--
+				numBuf[n] = byte('0' + v%10)
+				v /= 10
+				if v == 0 {
+					break
+				}
+			}
+			b.Write(numBuf[n:])
+		}
+	}
+	return b.String()
+}
+
+func resolveStackTraceCached(p *parser.Parser, cache map[types.StackTraceRef]*cachedStackTrace, stRef types.StackTraceRef) *cachedStackTrace {
+	if cached, ok := cache[stRef]; ok {
+		return cached
+	}
+
+	st := p.GetStacktrace(stRef)
+	if st == nil || len(st.Frames) == 0 {
+		cached := &cachedStackTrace{}
+		cache[stRef] = cached
+		return cached
+	}
+
+	// JFR frames are leaf-first; reverse to root-first for collapsed format.
+	n := len(st.Frames)
+	frames := make([]string, n)
+	lines := make([]uint32, n)
+	for i, f := range st.Frames {
+		frames[n-1-i] = resolveFrame(p, f)
+		lines[n-1-i] = f.LineNumber
+	}
+
+	cached := &cachedStackTrace{
+		frames: frames,
+		lines:  lines,
+		key:    buildStackKeyWithLines(frames, lines),
+	}
+	cache[stRef] = cached
+	return cached
+}
+
 func allJFREventTypes() map[string]struct{} {
 	return map[string]struct{}{
 		"cpu":   {},
@@ -129,37 +231,18 @@ func singleJFREventType(eventType string) map[string]struct{} {
 	return map[string]struct{}{eventType: {}}
 }
 
-func appendJFRStackSample(p *parser.Parser, agg map[stackKey]*aggValue, stRef types.StackTraceRef, thRef types.ThreadRef) {
-	st := p.GetStacktrace(stRef)
-	if st == nil || len(st.Frames) == 0 {
+func appendJFRStackSample(p *parser.Parser, stackCache map[types.StackTraceRef]*cachedStackTrace, agg map[stackKey]*aggValue, stRef types.StackTraceRef, thRef types.ThreadRef) {
+	cached := resolveStackTraceCached(p, stackCache, stRef)
+	if len(cached.frames) == 0 {
 		return
 	}
 
-	// JFR frames are leaf-first; reverse to root-first for collapsed format.
-	n := len(st.Frames)
-	parts := make([]string, n)
-	lineNums := make([]uint32, n)
-	for i, f := range st.Frames {
-		parts[n-1-i] = resolveFrame(p, f)
-		lineNums[n-1-i] = f.LineNumber
-	}
-
-	// Build key that includes line numbers for differentiation.
-	keyParts := make([]string, n)
-	for i := 0; i < n; i++ {
-		if lineNums[i] > 0 {
-			keyParts[i] = fmt.Sprintf("%s:%d", parts[i], lineNums[i])
-		} else {
-			keyParts[i] = parts[i]
-		}
-	}
-
 	thread := resolveThread(p, thRef)
-	key := stackKey{frames: strings.Join(keyParts, ";"), thread: thread}
+	key := stackKey{frames: cached.key, thread: thread}
 	if v, ok := agg[key]; ok {
 		v.count++
 	} else {
-		agg[key] = &aggValue{frames: parts, lines: lineNums, count: 1}
+		agg[key] = &aggValue{frames: cached.frames, lines: cached.lines, count: 1}
 	}
 }
 
@@ -189,6 +272,10 @@ func parseJFRData(path string, stackEvents map[string]struct{}) (*parsedJFR, err
 	for eventType := range stackEvents {
 		aggByEvent[eventType] = make(map[stackKey]*aggValue)
 	}
+	// async-profiler call_trace_id values are stable across JFR chunks, so stack
+	// decoding can be memoized globally for the file. Thread refs are chunk-local
+	// (raw OS tids) and therefore resolved directly per event.
+	stackCache := make(map[types.StackTraceRef]*cachedStackTrace)
 
 	for {
 		typ, err := p.ParseEvent()
@@ -238,7 +325,7 @@ func parseJFRData(path string, stackEvents map[string]struct{}) (*parsedJFR, err
 		if !ok {
 			continue
 		}
-		appendJFRStackSample(p, agg, stRef, thRef)
+		appendJFRStackSample(p, stackCache, agg, stRef, thRef)
 	}
 
 	stacksByEvent := make(map[string]*stackFile, len(aggByEvent))
