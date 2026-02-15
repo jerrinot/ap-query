@@ -7,7 +7,7 @@
 // Input: .jfr/.jfr.gz files are parsed as JFR binary; all other files and
 // stdin (-) are parsed as collapsed text.
 //
-// Commands: hot, tree, trace, callers, threads, filter, events, collapse, diff, lines, info
+// Commands: hot, tree, trace, callers, threads, filter, events, collapse, diff, lines, info, timeline
 package main
 
 import (
@@ -49,6 +49,7 @@ Input auto-detection:
 Commands:
   info      One-shot triage: events, threads, hot methods, and drill-down.
   hot       Rank methods by self-time and total-time.
+  timeline  Sample distribution over time (JFR only).
   tree      Call tree descending from a method (optional -m; shows all if omitted).
   trace     Hottest path from a method to leaf (-m required).
   callers   Callers ascending to a method (-m required).
@@ -65,6 +66,8 @@ Commands:
 Global flags:
   --event TYPE, -e TYPE   Event type override: cpu, wall, alloc, lock. JFR only.
   -t THREAD               Filter stacks to threads matching substring.
+  --from DURATION          Start of time window (relative to recording start). JFR only.
+  --to DURATION            End of time window (relative to recording start). JFR only.
 
 Command-specific flags:
   -m METHOD, --method METHOD   Substring match against method names.
@@ -79,10 +82,16 @@ Command-specific flags:
   --top-methods N              Hot methods shown in info (default: 20, 0=all).
   --hide REGEX                 Remove frames matching regex from stacks before analysis (tree, trace, callers).
   --include-callers            Include caller frames in filter output.
+  --buckets N                  Number of time buckets for timeline (default: auto ~20).
+  --resolution DURATION        Fixed bucket width for timeline (e.g. 1s, 500ms). Overrides --buckets.
+  --top-method                 Annotate each timeline bucket with the top method.
 
 Examples:
   ap-query info profile.jfr
   ap-query hot profile.jfr --event cpu --top 20
+  ap-query timeline profile.jfr
+  ap-query timeline profile.jfr --from 12s --to 14s --method Workload
+  ap-query hot profile.jfr --from 5s --to 10s
   ap-query tree profile.jfr -m HashMap.resize --depth 6
   ap-query trace profile.jfr -m HashMap.resize --min-pct 0.5
   ap-query callers profile.jfr -m HashMap.resize
@@ -119,7 +128,7 @@ func parseFlags(args []string) flags {
 			key := strings.TrimLeft(a, "-")
 			// Known boolean flags
 			switch key {
-			case "fqn", "include-callers", "force", "project", "claude", "codex", "stdout":
+			case "fqn", "include-callers", "force", "project", "claude", "codex", "stdout", "top-method":
 				f.bools[key] = true
 				i++
 				continue
@@ -187,6 +196,11 @@ func (f *flags) boolean(keys ...string) bool {
 	return false
 }
 
+func exitTimelineRequiresJFR() {
+	fmt.Fprintln(os.Stderr, "error: timeline requires a JFR file")
+	os.Exit(2)
+}
+
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
@@ -250,6 +264,54 @@ func main() {
 		return
 	}
 
+	// --from/--to validation
+	fromStr := f.str("from")
+	toStr := f.str("to")
+	hasFrom := fromStr != "" || f.bools["from"]
+	hasTo := toStr != "" || f.bools["to"]
+
+	if hasFrom || hasTo {
+		if cmd == "diff" {
+			fmt.Fprintln(os.Stderr, "error: --from/--to not supported with diff")
+			os.Exit(2)
+		}
+	}
+
+	var fromNanos, toNanos int64 = -1, -1
+	needTimed := false
+	if hasFrom || hasTo {
+		// Detect bare --from/--to (flag without value)
+		if f.bools["from"] && fromStr == "" {
+			fmt.Fprintln(os.Stderr, "error: --from requires a duration value (e.g. --from 12s)")
+			os.Exit(2)
+		}
+		if f.bools["to"] && toStr == "" {
+			fmt.Fprintln(os.Stderr, "error: --to requires a duration value (e.g. --to 14s)")
+			os.Exit(2)
+		}
+		if fromStr != "" {
+			d, err := time.ParseDuration(fromStr)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error: invalid --from value %q: %v\n", fromStr, err)
+				os.Exit(2)
+			}
+			fromNanos = d.Nanoseconds()
+		}
+		if toStr != "" {
+			d, err := time.ParseDuration(toStr)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error: invalid --to value %q: %v\n", toStr, err)
+				os.Exit(2)
+			}
+			toNanos = d.Nanoseconds()
+		}
+		if fromNanos >= 0 && toNanos >= 0 && toNanos < fromNanos {
+			fmt.Fprintln(os.Stderr, "error: --to must be >= --from")
+			os.Exit(2)
+		}
+		needTimed = true
+	}
+
 	// diff requires two positional args
 	if cmd == "diff" {
 		if len(f.args) < 2 {
@@ -270,7 +332,7 @@ func main() {
 		var beforeEventCounts map[string]int
 		var beforeStacksByEvent map[string]*stackFile
 		if isJFRPath(beforePath) {
-			parsed, err := parseJFRData(beforePath, eventsToParse)
+			parsed, err := parseJFRData(beforePath, eventsToParse, parseOpts{})
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "error: %v\n", err)
 				os.Exit(1)
@@ -281,7 +343,7 @@ func main() {
 		var afterEventCounts map[string]int
 		var afterStacksByEvent map[string]*stackFile
 		if isJFRPath(afterPath) {
-			parsed, err := parseJFRData(afterPath, eventsToParse)
+			parsed, err := parseJFRData(afterPath, eventsToParse, parseOpts{})
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "error: %v\n", err)
 				os.Exit(1)
@@ -338,18 +400,63 @@ func main() {
 	eventReason := eventReasonUnknown
 	var sf *stackFile
 	isJFR := false
+	var parsed *parsedJFR
+
+	if cmd == "timeline" && !isJFRPath(path) {
+		exitTimelineRequiresJFR()
+	}
+
+	if needTimed && !isJFRPath(path) {
+		fmt.Fprintln(os.Stderr, "warning: --from/--to ignored for non-JFR input (no timestamps)")
+		needTimed = false
+		fromNanos = -1
+		toNanos = -1
+	}
+
+	if cmd == "timeline" {
+		needTimed = true
+	}
+
 	if isJFRPath(path) {
 		isJFR = true
 		eventsToParse := allJFREventTypes()
 		if eventExplicit {
 			eventsToParse = singleJFREventType(eventType)
 		}
-		parsed, err := parseJFRData(path, eventsToParse)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		opts := parseOpts{}
+		if needTimed {
+			opts.collectTimestamps = true
+			opts.fromNanos = fromNanos
+			opts.toNanos = toNanos
+		}
+		var parseErr error
+		parsed, parseErr = parseJFRData(path, eventsToParse, opts)
+		if parseErr != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", parseErr)
 			os.Exit(1)
 		}
-		eventCounts = parsed.eventCounts
+
+		if fromNanos >= 0 && parsed.spanNanos > 0 && fromNanos >= parsed.spanNanos {
+			fmt.Fprintf(os.Stderr, "warning: --from %s is beyond recording duration (%s); result will be empty\n",
+				fromStr, formatDuration(parsed.spanNanos))
+			fromNanos = parsed.spanNanos
+		}
+		if toNanos >= 0 && parsed.spanNanos > 0 && toNanos > parsed.spanNanos {
+			toNanos = parsed.spanNanos
+		}
+
+		if needTimed && parsed.timedEvents != nil {
+			// Recompute event counts from filtered timed events.
+			filteredCounts := make(map[string]int)
+			for et, events := range parsed.timedEvents {
+				if len(events) > 0 {
+					filteredCounts[et] = len(events)
+				}
+			}
+			eventCounts = filteredCounts
+		} else {
+			eventCounts = parsed.eventCounts
+		}
 		eventType, eventReason = resolveEventType(eventType, eventExplicit, eventCounts)
 		sf = parsed.stacksByEvent[eventType]
 		if sf == nil {
@@ -363,11 +470,20 @@ func main() {
 		}
 	}
 
-	if thread != "" {
+	if thread != "" && cmd != "timeline" {
 		sf = sf.filterByThread(thread)
 	}
-	if isJFR && cmd != "info" {
+	if isJFR && cmd != "info" && cmd != "timeline" {
 		printEventSelectionForSingle(eventType, eventReason, eventCounts)
+	}
+	if needTimed && cmd != "timeline" {
+		if fromNanos >= 0 && toNanos >= 0 {
+			fmt.Fprintf(os.Stderr, "Window: %s to %s\n", formatDuration(fromNanos), formatDuration(toNanos))
+		} else if fromNanos >= 0 {
+			fmt.Fprintf(os.Stderr, "Window: %s to end\n", formatDuration(fromNanos))
+		} else if toNanos >= 0 {
+			fmt.Fprintf(os.Stderr, "Window: start to %s\n", formatDuration(toNanos))
+		}
 	}
 
 	switch cmd {
@@ -461,6 +577,16 @@ func main() {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
+
+	case "timeline":
+		if !isJFR {
+			exitTimelineRequiresJFR()
+		}
+		buckets := f.intVal([]string{"buckets"}, 0)
+		resolution := f.str("resolution")
+		method := f.str("m", "method")
+		topMethod := f.boolean("top-method")
+		cmdTimeline(parsed, eventType, buckets, resolution, method, topMethod, thread, fromNanos, toNanos)
 
 	case "info":
 		expand := f.intVal([]string{"expand"}, 3)

@@ -8,11 +8,6 @@ import (
 	"testing"
 )
 
-const (
-	jfrChunkHeaderSize = 68
-	jfrChunkMagic      = 0x464c5200
-)
-
 func countJFRChunks(path string) (int, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -67,7 +62,7 @@ func TestJFRMultiChunkFixtureHasMultipleChunks(t *testing.T) {
 		t.Fatalf("expected at least 2 chunks, got %d", chunks)
 	}
 
-	parsed, err := parseJFRData(path, singleJFREventType("cpu"))
+	parsed, err := parseJFRData(path, singleJFREventType("cpu"), parseOpts{})
 	if err != nil {
 		t.Fatalf("parseJFRData: %v", err)
 	}
@@ -79,11 +74,11 @@ func TestJFRMultiChunkFixtureHasMultipleChunks(t *testing.T) {
 func TestParseJFRDataMultiChunkAllEventsMatchesSingleCPU(t *testing.T) {
 	path := jfrFixture("multichunk.jfr")
 
-	parsedAll, err := parseJFRData(path, allJFREventTypes())
+	parsedAll, err := parseJFRData(path, allJFREventTypes(), parseOpts{})
 	if err != nil {
 		t.Fatalf("parseJFRData(all): %v", err)
 	}
-	parsedCPU, err := parseJFRData(path, singleJFREventType("cpu"))
+	parsedCPU, err := parseJFRData(path, singleJFREventType("cpu"), parseOpts{})
 	if err != nil {
 		t.Fatalf("parseJFRData(cpu): %v", err)
 	}

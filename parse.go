@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"compress/gzip"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"os"
@@ -137,9 +138,27 @@ type aggValue struct {
 	count  int
 }
 
+type timedEvent struct {
+	offsetNanos int64    // nanoseconds since recording start (originNanos)
+	stackKey    string   // prebuilt key from cachedStackTrace
+	frames      []string // resolved frame names (shared with cache)
+	lines       []uint32 // resolved line numbers (shared with cache)
+	thread      string   // resolved thread name
+	weight      int      // sample count (>1 for wall batch samples)
+}
+
+type parseOpts struct {
+	collectTimestamps bool
+	fromNanos         int64 // -1 = no filter
+	toNanos           int64 // -1 = no filter
+}
+
 type parsedJFR struct {
 	eventCounts   map[string]int
 	stacksByEvent map[string]*stackFile
+	timedEvents   map[string][]timedEvent // nil when not collecting
+	originNanos   int64                   // first chunk's StartNanos
+	spanNanos     int64                   // total recording span from chunk header scan
 }
 
 // cachedStackTrace stores a resolved stacktrace in root->leaf order plus
@@ -257,7 +276,72 @@ func singleJFREventType(eventType string) map[string]struct{} {
 	return map[string]struct{}{eventType: {}}
 }
 
-func appendJFRStackSample(p *parser.Parser, stackCache map[types.StackTraceRef]*cachedStackTrace, agg map[stackKey]*aggValue, stRef types.StackTraceRef, thRef types.ThreadRef) {
+// ticksToNanos converts a tick-based StartTime to nanosecond offset from originNanos.
+// Overflow-safe: uses quotient/remainder to avoid intermediate overflow.
+func ticksToNanos(startTicks, hdrStartTicks, hdrStartNanos, originNanos, tps uint64) int64 {
+	if tps == 0 {
+		return 0
+	}
+	delta := startTicks - hdrStartTicks
+	sec := delta / tps
+	rem := delta % tps
+	return int64(hdrStartNanos-originNanos) +
+		int64(sec)*1_000_000_000 +
+		int64(rem)*1_000_000_000/int64(tps)
+}
+
+const jfrChunkHeaderSize = 68
+const jfrChunkMagic = 0x464c5200
+
+// scanChunkHeaders reads 68-byte chunk headers linked by Size to determine
+// originNanos (first chunk StartNanos) and spanNanos (max end - origin).
+func scanChunkHeaders(buf []byte) (originNanos int64, spanNanos int64, err error) {
+	pos := 0
+	chunks := 0
+	var origin uint64
+	var maxEnd uint64
+
+	for pos+jfrChunkHeaderSize <= len(buf) {
+		magic := binary.BigEndian.Uint32(buf[pos:])
+		if magic != jfrChunkMagic {
+			if chunks == 0 {
+				return 0, 0, fmt.Errorf("no valid JFR chunk header found")
+			}
+			fmt.Fprintf(os.Stderr, "warning: truncated chunk header scan at offset %d; timeline span may be incomplete\n", pos)
+			break
+		}
+		size := int(binary.BigEndian.Uint64(buf[pos+8:]))
+		startNanos := binary.BigEndian.Uint64(buf[pos+32:])
+		durationNanos := binary.BigEndian.Uint64(buf[pos+40:])
+
+		if chunks == 0 {
+			origin = startNanos
+		}
+		end := startNanos + durationNanos
+		if chunks == 0 || end > maxEnd {
+			maxEnd = end
+		}
+		chunks++
+
+		if size <= 0 || pos+size > len(buf) || pos+size <= pos {
+			fmt.Fprintf(os.Stderr, "warning: truncated chunk header scan at offset %d; timeline span may be incomplete\n", pos)
+			break
+		}
+		pos += size
+	}
+
+	if chunks == 0 {
+		return 0, 0, fmt.Errorf("no valid JFR chunk header found")
+	}
+
+	originNanos = int64(origin)
+	if maxEnd > origin {
+		spanNanos = int64(maxEnd - origin)
+	}
+	return originNanos, spanNanos, nil
+}
+
+func appendJFRStackSample(p *parser.Parser, stackCache map[types.StackTraceRef]*cachedStackTrace, agg map[stackKey]*aggValue, stRef types.StackTraceRef, thRef types.ThreadRef, weight int) {
 	cached := resolveStackTraceCached(p, stackCache, stRef)
 	if len(cached.frames) == 0 {
 		return
@@ -266,9 +350,9 @@ func appendJFRStackSample(p *parser.Parser, stackCache map[types.StackTraceRef]*
 	thread := resolveThread(p, thRef)
 	key := stackKey{frames: cached.key, thread: thread}
 	if v, ok := agg[key]; ok {
-		v.count++
+		v.count += weight
 	} else {
-		agg[key] = &aggValue{frames: cached.frames, lines: cached.lines, count: 1}
+		agg[key] = &aggValue{frames: cached.frames, lines: cached.lines, count: weight}
 	}
 }
 
@@ -286,11 +370,29 @@ func buildStackFile(agg map[stackKey]*aggValue) *stackFile {
 	return sf
 }
 
-func parseJFRData(path string, stackEvents map[string]struct{}) (*parsedJFR, error) {
+func buildStackFileFromTimed(events []timedEvent) *stackFile {
+	agg := make(map[stackKey]*aggValue)
+	for i := range events {
+		e := &events[i]
+		key := stackKey{frames: e.stackKey, thread: e.thread}
+		if v, ok := agg[key]; ok {
+			v.count += e.weight
+		} else {
+			agg[key] = &aggValue{frames: e.frames, lines: e.lines, count: e.weight}
+		}
+	}
+	return buildStackFile(agg)
+}
+
+func parseJFRData(path string, stackEvents map[string]struct{}, opts parseOpts) (*parsedJFR, error) {
 	buf, err := readJFRBytes(path)
 	if err != nil {
 		return nil, err
 	}
+
+	// Scan chunk headers for origin/span before event parsing.
+	var originNanos, spanNanos int64
+	originNanos, spanNanos, _ = scanChunkHeaders(buf)
 
 	p := parser.NewParser(buf, parser.Options{})
 	counts := make(map[string]int)
@@ -302,6 +404,11 @@ func parseJFRData(path string, stackEvents map[string]struct{}) (*parsedJFR, err
 	// decoding can be memoized globally for the file. Thread refs are chunk-local
 	// (raw OS tids) and therefore resolved directly per event.
 	stackCache := make(map[types.StackTraceRef]*cachedStackTrace)
+
+	var timedByEvent map[string][]timedEvent
+	if opts.collectTimestamps {
+		timedByEvent = make(map[string][]timedEvent, len(stackEvents))
+	}
 
 	for {
 		typ, err := p.ParseEvent()
@@ -315,52 +422,119 @@ func parseJFRData(path string, stackEvents map[string]struct{}) (*parsedJFR, err
 		var eventType string
 		var stRef types.StackTraceRef
 		var thRef types.ThreadRef
+		var startTicks uint64
+		weight := 1
 
 		switch typ {
 		case p.TypeMap.T_EXECUTION_SAMPLE:
 			eventType = "cpu"
 			stRef = p.ExecutionSample.StackTrace
 			thRef = p.ExecutionSample.SampledThread
+			startTicks = p.ExecutionSample.StartTime
 		case p.TypeMap.T_WALL_CLOCK_SAMPLE:
 			eventType = "wall"
 			stRef = p.WallClockSample.StackTrace
 			thRef = p.WallClockSample.SampledThread
+			startTicks = p.WallClockSample.StartTime
+			weight = int(p.WallClockSample.Samples)
+			if weight < 1 {
+				weight = 1
+			}
 		case p.TypeMap.T_ALLOC_IN_NEW_TLAB:
 			eventType = "alloc"
 			stRef = p.ObjectAllocationInNewTLAB.StackTrace
 			thRef = p.ObjectAllocationInNewTLAB.EventThread
+			startTicks = p.ObjectAllocationInNewTLAB.StartTime
 		case p.TypeMap.T_ALLOC_OUTSIDE_TLAB:
 			eventType = "alloc"
 			stRef = p.ObjectAllocationOutsideTLAB.StackTrace
 			thRef = p.ObjectAllocationOutsideTLAB.EventThread
+			startTicks = p.ObjectAllocationOutsideTLAB.StartTime
 		case p.TypeMap.T_ALLOC_SAMPLE:
 			eventType = "alloc"
 			stRef = p.ObjectAllocationSample.StackTrace
 			thRef = p.ObjectAllocationSample.EventThread
+			startTicks = p.ObjectAllocationSample.StartTime
 		case p.TypeMap.T_MONITOR_ENTER:
 			eventType = "lock"
 			stRef = p.JavaMonitorEnter.StackTrace
 			thRef = p.JavaMonitorEnter.EventThread
+			startTicks = p.JavaMonitorEnter.StartTime
 		}
 		if eventType == "" {
 			continue
 		}
 
 		counts[eventType]++
-		agg, ok := aggByEvent[eventType]
-		if !ok {
-			continue
+
+		if opts.collectTimestamps {
+			if _, ok := stackEvents[eventType]; !ok {
+				continue
+			}
+			hdr := p.ChunkHeader()
+			offsetNanos := ticksToNanos(startTicks, hdr.StartTicks, hdr.StartNanos, uint64(originNanos), hdr.TicksPerSecond)
+
+			// Time-range filtering: skip events outside the window.
+			if opts.fromNanos >= 0 && offsetNanos < opts.fromNanos {
+				continue
+			}
+			if opts.toNanos >= 0 && offsetNanos >= opts.toNanos {
+				continue
+			}
+
+			cached := resolveStackTraceCached(p, stackCache, stRef)
+			if len(cached.frames) == 0 {
+				continue
+			}
+			thread := resolveThread(p, thRef)
+			timedByEvent[eventType] = append(timedByEvent[eventType], timedEvent{
+				offsetNanos: offsetNanos,
+				stackKey:    cached.key,
+				frames:      cached.frames,
+				lines:       cached.lines,
+				thread:      thread,
+				weight:      weight,
+			})
+		} else {
+			agg, ok := aggByEvent[eventType]
+			if !ok {
+				continue
+			}
+			appendJFRStackSample(p, stackCache, agg, stRef, thRef, weight)
 		}
-		appendJFRStackSample(p, stackCache, agg, stRef, thRef)
 	}
 
 	stacksByEvent := make(map[string]*stackFile, len(aggByEvent))
-	for eventType, agg := range aggByEvent {
-		stacksByEvent[eventType] = buildStackFile(agg)
+	if opts.collectTimestamps {
+		// Build stackFiles from timed events (already filtered by from/to).
+		for eventType := range stackEvents {
+			if events, ok := timedByEvent[eventType]; ok && len(events) > 0 {
+				stacksByEvent[eventType] = buildStackFileFromTimed(events)
+			} else {
+				stacksByEvent[eventType] = &stackFile{}
+			}
+		}
+	} else {
+		for eventType, agg := range aggByEvent {
+			stacksByEvent[eventType] = buildStackFile(agg)
+		}
 	}
+	if opts.collectTimestamps {
+		total := 0
+		for _, events := range timedByEvent {
+			total += len(events)
+		}
+		if total > 10_000_000 {
+			fmt.Fprintf(os.Stderr, "warning: %d events collected; consider using --from/--to to narrow the time window\n", total)
+		}
+	}
+
 	return &parsedJFR{
 		eventCounts:   counts,
 		stacksByEvent: stacksByEvent,
+		timedEvents:   timedByEvent,
+		originNanos:   originNanos,
+		spanNanos:     spanNanos,
 	}, nil
 }
 
@@ -513,7 +687,7 @@ func isJFRPath(path string) bool {
 
 func openInput(path, eventType string) (sf *stackFile, isJFR bool, err error) {
 	if isJFRPath(path) {
-		parsed, err := parseJFRData(path, singleJFREventType(eventType))
+		parsed, err := parseJFRData(path, singleJFREventType(eventType), parseOpts{})
 		if err != nil {
 			return nil, true, err
 		}

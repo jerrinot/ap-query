@@ -168,7 +168,7 @@ func TestPrintEventSelectionForDiffOneSidedWarning(t *testing.T) {
 
 func TestJFRTraceAutoSelectSingleEvent(t *testing.T) {
 	path := jfrFixture("wall.jfr")
-	parsed, err := parseJFRData(path, nil)
+	parsed, err := parseJFRData(path, nil, parseOpts{})
 	if err != nil {
 		t.Fatalf("parseJFRData: %v", err)
 	}

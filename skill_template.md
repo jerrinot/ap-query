@@ -37,9 +37,11 @@ Use `{{ASPROF_PATH}}` to record profiles. Common invocations:
 5. **Lines**: `{{AP_QUERY_PATH}} lines profile.jfr -m HashMap.resize`
 6. **Thread focus**: `{{AP_QUERY_PATH}} hot profile.jfr -t "http-nio" --top 20`
 7. **Compare**: `{{AP_QUERY_PATH}} diff before.jfr after.jfr --min-delta 0.5` — REGRESSION/IMPROVEMENT/NEW/GONE.
-8. **CI gate**: `{{AP_QUERY_PATH}} hot profile.jfr --assert-below 15.0` — exits 1 if top method >= threshold.
-9. **Export**: `{{AP_QUERY_PATH}} collapse profile.jfr` — emit collapsed-stack text for external tools.
-10. **Filter**: `{{AP_QUERY_PATH}} filter profile.jfr -m HashMap.resize` — output only stacks passing through a method.
+8. **Timeline**: `{{AP_QUERY_PATH}} timeline profile.jfr` — sample distribution over time.
+   Use `--from 12s --to 14s` with any command to zoom into a time window.
+9. **CI gate**: `{{AP_QUERY_PATH}} hot profile.jfr --assert-below 15.0` — exits 1 if top method >= threshold.
+10. **Export**: `{{AP_QUERY_PATH}} collapse profile.jfr` — emit collapsed-stack text for external tools.
+11. **Filter**: `{{AP_QUERY_PATH}} filter profile.jfr -m HashMap.resize` — output only stacks passing through a method.
 
 ## Event types (`--event`)
 
@@ -49,6 +51,24 @@ Use `{{ASPROF_PATH}}` to record profiles. Common invocations:
 - **alloc** / **lock** — allocation and lock-contention hotspots.
 
 When unsure, start with `cpu`. Switch to `wall` if the profile shows low CPU but high latency.
+
+## Time-range filtering (`--from`/`--to`)
+
+Use `--from DURATION` and `--to DURATION` (relative to recording start) to restrict any command
+to a time window. JFR only. Values use Go duration syntax: `500ms`, `2s`, `1m30s`.
+
+- `{{AP_QUERY_PATH}} hot profile.jfr --from 12s --to 14s` — hot methods in a 2-second window.
+- `{{AP_QUERY_PATH}} timeline profile.jfr --from 5s --to 15s` — timeline of a 10-second slice.
+
+Combine with `timeline` to first identify spikes, then zoom in with `--from`/`--to` on any command.
+
+## Timeline flags
+
+- `--buckets N` — number of time buckets (default: auto ~20).
+- `--resolution DURATION` — fixed bucket width (e.g. `1s`, `500ms`). Overrides `--buckets`.
+- `-m METHOD` / `--method METHOD` — only count samples where the stack contains METHOD.
+- `--top-method` — annotate each bucket with the top method by self-time.
+- Time labels automatically increase precision for sub-second buckets (for example, `4m44.000s-4m44.001s` at `--resolution 1ms`).
 
 ## Threads
 

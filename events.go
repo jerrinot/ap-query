@@ -6,7 +6,7 @@ import (
 )
 
 func cmdEvents(path string) error {
-	parsed, err := parseJFRData(path, nil)
+	parsed, err := parseJFRData(path, nil, parseOpts{})
 	if err != nil {
 		return err
 	}

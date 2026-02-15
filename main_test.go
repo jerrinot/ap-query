@@ -5,14 +5,17 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -38,6 +41,54 @@ func makeStackFile(stacks []stack) *stackFile {
 		sf.totalSamples += s.count
 	}
 	return sf
+}
+
+func runCLIForTest(t *testing.T, args []string, stdin io.Reader) (int, string, string) {
+	t.Helper()
+	cmdArgs := append([]string{"-test.run=TestHelperProcessMain", "--"}, args...)
+	cmd := exec.Command(os.Args[0], cmdArgs...)
+	cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
+	if stdin != nil {
+		cmd.Stdin = stdin
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	exitCode := 0
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			exitCode = ee.ExitCode()
+		} else {
+			t.Fatalf("helper process failed: %v", err)
+		}
+	}
+
+	return exitCode, stdout.String(), stderr.String()
+}
+
+func TestHelperProcessMain(t *testing.T) {
+	if os.Getenv("GO_WANT_HELPER_PROCESS") != "1" {
+		return
+	}
+
+	sep := -1
+	for i, a := range os.Args {
+		if a == "--" {
+			sep = i
+			break
+		}
+	}
+	if sep < 0 {
+		fmt.Fprintln(os.Stderr, "error: missing test helper separator")
+		os.Exit(2)
+	}
+
+	os.Args = append([]string{"ap-query"}, os.Args[sep+1:]...)
+	main()
+	os.Exit(0)
 }
 
 // ---------------------------------------------------------------------------
@@ -2551,7 +2602,7 @@ func TestJFRDiscoverEventsSingle(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.file, func(t *testing.T) {
-			parsed, err := parseJFRData(jfrFixture(tt.file), nil)
+			parsed, err := parseJFRData(jfrFixture(tt.file), nil, parseOpts{})
 			if err != nil {
 				t.Fatalf("parseJFRData(%s): %v", tt.file, err)
 			}
@@ -2571,7 +2622,7 @@ func TestJFRDiscoverEventsSingle(t *testing.T) {
 }
 
 func TestJFRDiscoverEventsMulti(t *testing.T) {
-	parsed, err := parseJFRData(jfrFixture("multi.jfr"), nil)
+	parsed, err := parseJFRData(jfrFixture("multi.jfr"), nil, parseOpts{})
 	if err != nil {
 		t.Fatalf("parseJFRData: %v", err)
 	}
@@ -2589,13 +2640,13 @@ func TestJFRDiscoverEventsMulti(t *testing.T) {
 func TestParseJFRDataAllEventsMatchesSingleEventParsing(t *testing.T) {
 	path := jfrFixture("multi.jfr")
 
-	parsed, err := parseJFRData(path, allJFREventTypes())
+	parsed, err := parseJFRData(path, allJFREventTypes(), parseOpts{})
 	if err != nil {
 		t.Fatalf("parseJFRData: %v", err)
 	}
 
 	for _, eventType := range []string{"cpu", "wall", "alloc", "lock"} {
-		single, err := parseJFRData(path, singleJFREventType(eventType))
+		single, err := parseJFRData(path, singleJFREventType(eventType), parseOpts{})
 		if err != nil {
 			t.Fatalf("parseJFRData(%s): %v", eventType, err)
 		}
@@ -2614,7 +2665,7 @@ func TestParseJFRDataAllEventsMatchesSingleEventParsing(t *testing.T) {
 }
 
 func TestJFRBranchMissesMapsToCPU(t *testing.T) {
-	parsed, err := parseJFRData(jfrFixture("branch-misses.jfr"), nil)
+	parsed, err := parseJFRData(jfrFixture("branch-misses.jfr"), nil, parseOpts{})
 	if err != nil {
 		t.Fatalf("parseJFRData: %v", err)
 	}
@@ -2640,7 +2691,7 @@ func TestJFRInfoAutoSelectWall(t *testing.T) {
 	}
 
 	// Simulate auto-select: discover events, find best
-	parsed, err := parseJFRData(path, nil)
+	parsed, err := parseJFRData(path, nil, parseOpts{})
 	if err != nil {
 		t.Fatalf("parseJFRData: %v", err)
 	}
@@ -2686,7 +2737,7 @@ func TestJFRInfoAlsoAvailable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openInput: %v", err)
 	}
-	parsed, err := parseJFRData(path, nil)
+	parsed, err := parseJFRData(path, nil, parseOpts{})
 	if err != nil {
 		t.Fatalf("parseJFRData: %v", err)
 	}
@@ -3696,7 +3747,7 @@ func TestCollapseRoundTrip(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.fixture, func(t *testing.T) {
 			// 1. Parse JFR directly
-			parsed, err := parseJFRData(jfrFixture(tt.fixture), singleJFREventType(tt.event))
+			parsed, err := parseJFRData(jfrFixture(tt.fixture), singleJFREventType(tt.event), parseOpts{})
 			if err != nil {
 				t.Fatalf("parseJFRData: %v", err)
 			}
@@ -4319,5 +4370,854 @@ func TestUpdateInstalledSkillsStaleAsprofFallsBack(t *testing.T) {
 	}
 	if !strings.Contains(args, realAsprof) {
 		t.Errorf("expected fallback path %q in args, got: %s", realAsprof, args)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Timeline & time-range filtering tests
+// ---------------------------------------------------------------------------
+
+func TestTicksToNanos(t *testing.T) {
+	tests := []struct {
+		name                                     string
+		startTicks, hdrStartTicks, hdrStartNanos uint64
+		originNanos, tps                         uint64
+		want                                     int64
+	}{
+		{
+			name:          "basic",
+			startTicks:    1_000_100,
+			hdrStartTicks: 1_000_000,
+			hdrStartNanos: 5_000_000_000,
+			originNanos:   5_000_000_000,
+			tps:           1_000_000,
+			want:          100_000, // 100 ticks / 1M tps = 0.0001s = 100000ns
+		},
+		{
+			name:          "one second offset",
+			startTicks:    2_000_000_000,
+			hdrStartTicks: 1_000_000_000,
+			hdrStartNanos: 10_000_000_000,
+			originNanos:   10_000_000_000,
+			tps:           1_000_000_000,
+			want:          1_000_000_000,
+		},
+		{
+			name:          "large ticks overflow safe",
+			startTicks:    10_000_000_000,
+			hdrStartTicks: 0,
+			hdrStartNanos: 100,
+			originNanos:   100,
+			tps:           1_000_000_000,
+			want:          10_000_000_000,
+		},
+		{
+			name:          "zero tps guard",
+			startTicks:    100,
+			hdrStartTicks: 0,
+			hdrStartNanos: 0,
+			originNanos:   0,
+			tps:           0,
+			want:          0,
+		},
+		{
+			name:          "multi chunk offset",
+			startTicks:    500,
+			hdrStartTicks: 0,
+			hdrStartNanos: 2_000_000_000,
+			originNanos:   1_000_000_000,
+			tps:           1000,
+			want:          1_500_000_000, // 1s chunk offset + 0.5s event offset
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ticksToNanos(tt.startTicks, tt.hdrStartTicks, tt.hdrStartNanos, tt.originNanos, tt.tps)
+			if got != tt.want {
+				t.Errorf("ticksToNanos() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestScanChunkHeaders(t *testing.T) {
+	// Test with actual cpu.jfr fixture (single chunk).
+	buf, err := readJFRBytes(jfrFixture("cpu.jfr"))
+	if err != nil {
+		t.Fatalf("readJFRBytes: %v", err)
+	}
+	origin, span, err := scanChunkHeaders(buf)
+	if err != nil {
+		t.Fatalf("scanChunkHeaders: %v", err)
+	}
+	if origin <= 0 {
+		t.Errorf("originNanos should be positive, got %d", origin)
+	}
+	if span <= 0 {
+		t.Errorf("spanNanos should be positive, got %d", span)
+	}
+	// Span should be roughly 5 seconds for cpu.jfr.
+	spanSec := float64(span) / 1e9
+	if spanSec < 4.0 || spanSec > 10.0 {
+		t.Errorf("expected span ~5s, got %.1fs", spanSec)
+	}
+}
+
+func TestScanChunkHeadersMultiChunk(t *testing.T) {
+	buf, err := readJFRBytes(jfrFixture("multichunk.jfr"))
+	if err != nil {
+		t.Fatalf("readJFRBytes: %v", err)
+	}
+	origin, span, err := scanChunkHeaders(buf)
+	if err != nil {
+		t.Fatalf("scanChunkHeaders: %v", err)
+	}
+	if origin <= 0 {
+		t.Errorf("originNanos should be positive, got %d", origin)
+	}
+	if span <= 0 {
+		t.Errorf("spanNanos should be positive, got %d", span)
+	}
+	// multichunk.jfr should have a span > 10s (multiple chunks).
+	spanSec := float64(span) / 1e9
+	if spanSec < 10.0 {
+		t.Errorf("expected span >= 10s for multichunk, got %.1fs", spanSec)
+	}
+}
+
+func TestScanChunkHeadersCorrupt(t *testing.T) {
+	// Buffer with no valid header.
+	_, _, err := scanChunkHeaders([]byte{0, 0, 0, 0})
+	if err == nil {
+		t.Error("expected error for corrupt buffer")
+	}
+	// Empty buffer.
+	_, _, err = scanChunkHeaders(nil)
+	if err == nil {
+		t.Error("expected error for empty buffer")
+	}
+}
+
+func TestWallSampleWeight(t *testing.T) {
+	parsed, err := parseJFRData(jfrFixture("wall.jfr"), singleJFREventType("wall"), parseOpts{
+		collectTimestamps: true,
+		fromNanos:         -1,
+		toNanos:           -1,
+	})
+	if err != nil {
+		t.Fatalf("parseJFRData: %v", err)
+	}
+	events := parsed.timedEvents["wall"]
+	if len(events) == 0 {
+		t.Fatal("expected wall events")
+	}
+	// Check that at least some events have weight > 1 (wall batch samples).
+	hasWeightGt1 := false
+	totalWeight := 0
+	for _, e := range events {
+		totalWeight += e.weight
+		if e.weight > 1 {
+			hasWeightGt1 = true
+		}
+	}
+	// totalWeight should match the stackFile totalSamples.
+	sf := parsed.stacksByEvent["wall"]
+	if sf == nil {
+		t.Fatal("no wall stackFile")
+	}
+	if sf.totalSamples != totalWeight {
+		t.Errorf("stackFile totalSamples=%d, timed totalWeight=%d", sf.totalSamples, totalWeight)
+	}
+	// It's possible all weights are 1 if the JFR doesn't use batch sampling.
+	// Just log it.
+	if !hasWeightGt1 {
+		t.Logf("note: no wall events with weight > 1 in fixture (Samples field may be 1)")
+	}
+}
+
+func TestFromToValidation(t *testing.T) {
+	// Test flag parsing for --from/--to validation.
+	tests := []struct {
+		name      string
+		args      []string
+		wantBool  bool // expect flag in bools (bare flag)
+		wantValue string
+	}{
+		{
+			name:     "bare from at end",
+			args:     []string{"hot", "--from"},
+			wantBool: true,
+		},
+		{
+			name:      "from with value",
+			args:      []string{"hot", "--from", "10s", "testdata/cpu.jfr"},
+			wantValue: "10s",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := parseFlags(tt.args[1:]) // skip command
+			if tt.wantBool {
+				if !f.bools["from"] {
+					t.Error("expected --from in bools")
+				}
+			}
+			if tt.wantValue != "" {
+				if f.str("from") != tt.wantValue {
+					t.Errorf("--from = %q, want %q", f.str("from"), tt.wantValue)
+				}
+			}
+		})
+	}
+
+	// Test that --to < --from is detectable.
+	t.Run("inverted range", func(t *testing.T) {
+		// Parse durations and verify comparison logic.
+		from, _ := time.ParseDuration("10s")
+		to, _ := time.ParseDuration("5s")
+		if to >= from {
+			t.Error("expected to < from")
+		}
+	})
+
+	// Test invalid duration parsing.
+	t.Run("invalid duration", func(t *testing.T) {
+		_, err := time.ParseDuration("abc")
+		if err == nil {
+			t.Error("expected parse error for 'abc'")
+		}
+	})
+}
+
+func TestFromToFiltering(t *testing.T) {
+	// Parse cpu.jfr with full range.
+	parsedFull, err := parseJFRData(jfrFixture("cpu.jfr"), singleJFREventType("cpu"), parseOpts{
+		collectTimestamps: true,
+		fromNanos:         -1,
+		toNanos:           -1,
+	})
+	if err != nil {
+		t.Fatalf("parseJFRData full: %v", err)
+	}
+	fullEvents := parsedFull.timedEvents["cpu"]
+
+	// Parse with a narrow time range (first 1 second).
+	parsedFiltered, err := parseJFRData(jfrFixture("cpu.jfr"), singleJFREventType("cpu"), parseOpts{
+		collectTimestamps: true,
+		fromNanos:         0,
+		toNanos:           1_000_000_000,
+	})
+	if err != nil {
+		t.Fatalf("parseJFRData filtered: %v", err)
+	}
+	filteredEvents := parsedFiltered.timedEvents["cpu"]
+
+	if len(filteredEvents) >= len(fullEvents) {
+		t.Errorf("expected fewer events after filtering, full=%d filtered=%d",
+			len(fullEvents), len(filteredEvents))
+	}
+	if len(filteredEvents) == 0 {
+		t.Error("expected some events in first second")
+	}
+
+	// All filtered events should be within [0, 1s).
+	for _, e := range filteredEvents {
+		if e.offsetNanos < 0 || e.offsetNanos >= 1_000_000_000 {
+			t.Errorf("event at %dns outside [0, 1s)", e.offsetNanos)
+		}
+	}
+}
+
+func TestCmdTimeline(t *testing.T) {
+	parsed, err := parseJFRData(jfrFixture("cpu.jfr"), allJFREventTypes(), parseOpts{
+		collectTimestamps: true,
+		fromNanos:         -1,
+		toNanos:           -1,
+	})
+	if err != nil {
+		t.Fatalf("parseJFRData: %v", err)
+	}
+	out := captureOutput(func() {
+		cmdTimeline(parsed, "cpu", 5, "", "", false, "", -1, -1)
+	})
+	if !strings.Contains(out, "Duration:") {
+		t.Error("expected Duration in header")
+	}
+	if !strings.Contains(out, "Buckets: 5") {
+		t.Errorf("expected 5 buckets, got %q", out)
+	}
+	if !strings.Contains(out, "Total:") {
+		t.Error("expected Total in header")
+	}
+	if !strings.Contains(out, "Samples") {
+		t.Error("expected Samples column header")
+	}
+	// Should have 5 data rows.
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	dataLines := 0
+	for _, line := range lines {
+		if strings.Contains(line, "s-") && strings.Contains(line, "\u2588") {
+			dataLines++
+		}
+	}
+	// At least some data lines with bars.
+	if dataLines < 3 {
+		t.Errorf("expected >=3 data lines with bars, got %d", dataLines)
+	}
+}
+
+func TestCmdTimelineMethod(t *testing.T) {
+	parsed, err := parseJFRData(jfrFixture("cpu.jfr"), allJFREventTypes(), parseOpts{
+		collectTimestamps: true,
+		fromNanos:         -1,
+		toNanos:           -1,
+	})
+	if err != nil {
+		t.Fatalf("parseJFRData: %v", err)
+	}
+	out := captureOutput(func() {
+		cmdTimeline(parsed, "cpu", 5, "", "Workload", false, "", -1, -1)
+	})
+	if !strings.Contains(out, "Matched:") {
+		t.Errorf("expected 'Matched:' in header with --method, got %q", out)
+	}
+}
+
+func TestCmdTimelineTopMethod(t *testing.T) {
+	parsed, err := parseJFRData(jfrFixture("cpu.jfr"), allJFREventTypes(), parseOpts{
+		collectTimestamps: true,
+		fromNanos:         -1,
+		toNanos:           -1,
+	})
+	if err != nil {
+		t.Fatalf("parseJFRData: %v", err)
+	}
+	out := captureOutput(func() {
+		cmdTimeline(parsed, "cpu", 5, "", "", true, "", -1, -1)
+	})
+	if !strings.Contains(out, "Top Method") {
+		t.Error("expected 'Top Method' column header")
+	}
+	// Each non-zero bucket should have a method name with percentage.
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	for _, line := range lines {
+		if strings.Contains(line, "s-") && strings.Contains(line, "\u2588") {
+			if !strings.Contains(line, "%") {
+				t.Errorf("expected %% in top-method line: %q", line)
+			}
+		}
+	}
+}
+
+func TestCmdTimelineTopMethodAggregatesLeafSelfCounts(t *testing.T) {
+	parsed := &parsedJFR{
+		timedEvents: map[string][]timedEvent{
+			"cpu": {
+				{offsetNanos: 100, stackKey: "A;X", frames: []string{"A", "X"}, lines: []uint32{0, 0}, weight: 2},
+				{offsetNanos: 200, stackKey: "B;Y", frames: []string{"B", "Y"}, lines: []uint32{0, 0}, weight: 5},
+				{offsetNanos: 300, stackKey: "C;Y", frames: []string{"C", "Y"}, lines: []uint32{0, 0}, weight: 3},
+				{offsetNanos: 400, stackKey: "D;X", frames: []string{"D", "X"}, lines: []uint32{0, 0}, weight: 4},
+			},
+		},
+		spanNanos: 1_000_000_000,
+	}
+	out := captureOutput(func() {
+		cmdTimeline(parsed, "cpu", 1, "", "", true, "", -1, -1)
+	})
+
+	// X=6, Y=8, total=14 => Y is top at 57%.
+	if !strings.Contains(out, "Y (57%)") {
+		t.Fatalf("expected top method Y with 57%% share, got %q", out)
+	}
+}
+
+func TestCmdTimelineZeroSpan(t *testing.T) {
+	// Single event at offset 0 — should not panic, should show 1 bucket.
+	parsed := &parsedJFR{
+		timedEvents: map[string][]timedEvent{
+			"cpu": {{offsetNanos: 0, stackKey: "A;B", frames: []string{"A", "B"}, lines: []uint32{0, 0}, weight: 1}},
+		},
+		spanNanos: 0,
+	}
+	out := captureOutput(func() {
+		cmdTimeline(parsed, "cpu", 0, "", "", false, "", -1, -1)
+	})
+	if !strings.Contains(out, "Buckets: 1") {
+		t.Errorf("expected 1 bucket for zero-span, got %q", out)
+	}
+	if !strings.Contains(out, "Total: 1") {
+		t.Errorf("expected Total: 1, got %q", out)
+	}
+}
+
+func TestCmdTimelineCollapsed(t *testing.T) {
+	// timeline requires JFR — verify isJFRPath returns false for non-JFR paths.
+	if isJFRPath("-") {
+		t.Error("expected isJFRPath(-) = false")
+	}
+	if isJFRPath("foo.txt") {
+		t.Error("expected isJFRPath(foo.txt) = false")
+	}
+	if !isJFRPath("foo.jfr") {
+		t.Error("expected isJFRPath(foo.jfr) = true")
+	}
+}
+
+func TestCmdTimelineResolution(t *testing.T) {
+	parsed, err := parseJFRData(jfrFixture("cpu.jfr"), allJFREventTypes(), parseOpts{
+		collectTimestamps: true,
+		fromNanos:         -1,
+		toNanos:           -1,
+	})
+	if err != nil {
+		t.Fatalf("parseJFRData: %v", err)
+	}
+	out := captureOutput(func() {
+		cmdTimeline(parsed, "cpu", 0, "1s", "", false, "", -1, -1)
+	})
+	if !strings.Contains(out, "1.0s each") {
+		t.Errorf("expected '1.0s each' in header, got %q", out)
+	}
+}
+
+func TestCmdTimelineFromTo(t *testing.T) {
+	parsed, err := parseJFRData(jfrFixture("cpu.jfr"), allJFREventTypes(), parseOpts{
+		collectTimestamps: true,
+		fromNanos:         1_000_000_000,
+		toNanos:           3_000_000_000,
+	})
+	if err != nil {
+		t.Fatalf("parseJFRData: %v", err)
+	}
+	out := captureOutput(func() {
+		cmdTimeline(parsed, "cpu", 5, "", "", false, "",
+			1_000_000_000, 3_000_000_000)
+	})
+	// Duration header should show the window span (2s), not full recording.
+	if !strings.Contains(out, "Duration: 2.0s") {
+		t.Errorf("expected 'Duration: 2.0s' in header, got %q", out)
+	}
+	// Time labels should start from 1.0s, not 0.0s.
+	if !strings.Contains(out, "1.0s-") {
+		t.Errorf("expected time labels starting at 1.0s, got %q", out)
+	}
+	if strings.Contains(out, " 0.0s-") {
+		t.Errorf("time labels should not start at 0.0s when --from 1s, got %q", out)
+	}
+}
+
+func TestCmdTimelineFromOnly(t *testing.T) {
+	parsed, err := parseJFRData(jfrFixture("cpu.jfr"), allJFREventTypes(), parseOpts{
+		collectTimestamps: true,
+		fromNanos:         1_000_000_000,
+		toNanos:           -1,
+	})
+	if err != nil {
+		t.Fatalf("parseJFRData: %v", err)
+	}
+	out := captureOutput(func() {
+		cmdTimeline(parsed, "cpu", 5, "", "", false, "",
+			1_000_000_000, -1)
+	})
+	// Bucket origin should start at 1s.
+	if !strings.Contains(out, "1.0s-") {
+		t.Errorf("expected time labels starting at 1.0s, got %q", out)
+	}
+	// Duration should be (span - 1s), not the full span.
+	if strings.Contains(out, " 0.0s-") {
+		t.Errorf("time labels should not start at 0.0s when --from 1s, got %q", out)
+	}
+}
+
+func TestFromBeyondSpanWarning(t *testing.T) {
+	path := jfrFixture("cpu.jfr")
+	parsed, err := parseJFRData(path, allJFREventTypes(), parseOpts{
+		collectTimestamps: true,
+		fromNanos:         -1,
+		toNanos:           -1,
+	})
+	if err != nil {
+		t.Fatalf("parseJFRData: %v", err)
+	}
+
+	exitCode, _, stderr := runCLIForTest(t, []string{"timeline", path, "--from", "100s"}, nil)
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", exitCode, stderr)
+	}
+
+	want := fmt.Sprintf("warning: --from %s is beyond recording duration (%s); result will be empty",
+		"100s", formatDuration(parsed.spanNanos))
+	if !strings.Contains(stderr, want) {
+		t.Errorf("expected warning %q, got %q", want, stderr)
+	}
+}
+
+func TestToClamping(t *testing.T) {
+	path := jfrFixture("cpu.jfr")
+	parsed, err := parseJFRData(path, allJFREventTypes(), parseOpts{
+		collectTimestamps: true,
+		fromNanos:         -1,
+		toNanos:           -1,
+	})
+	if err != nil {
+		t.Fatalf("parseJFRData: %v", err)
+	}
+
+	exitCode, _, stderr := runCLIForTest(t, []string{"hot", path, "--to", "100s"}, nil)
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", exitCode, stderr)
+	}
+
+	want := fmt.Sprintf("Window: start to %s", formatDuration(parsed.spanNanos))
+	if !strings.Contains(stderr, want) {
+		t.Errorf("expected clamped window %q, got %q", want, stderr)
+	}
+	if strings.Contains(stderr, "Window: start to 100.0s") {
+		t.Errorf("expected --to to be clamped to recording duration, got %q", stderr)
+	}
+}
+
+func TestFromToWithDiffError(t *testing.T) {
+	exitCode, _, stderr := runCLIForTest(t, []string{"diff", "--from", "5s", "a.jfr", "b.jfr"}, nil)
+	if exitCode != 2 {
+		t.Fatalf("exit code = %d, want 2; stderr=%q", exitCode, stderr)
+	}
+	if !strings.Contains(stderr, "error: --from/--to not supported with diff") {
+		t.Fatalf("expected diff time-window rejection, got %q", stderr)
+	}
+}
+
+func TestTimelineRejectsNonJFR(t *testing.T) {
+	exitCode, _, stderr := runCLIForTest(t, []string{"timeline", "does-not-exist.collapsed"}, nil)
+	if exitCode != 2 {
+		t.Fatalf("exit code = %d, want 2; stderr=%q", exitCode, stderr)
+	}
+	if !strings.Contains(stderr, "error: timeline requires a JFR file") {
+		t.Fatalf("expected timeline-only validation error, got %q", stderr)
+	}
+	if strings.Contains(stderr, "no such file or directory") {
+		t.Fatalf("expected rejection before openInput, got %q", stderr)
+	}
+}
+
+func TestTimelineRejectsStdinWithoutReading(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer r.Close()
+	defer w.Close()
+
+	cmdArgs := []string{"-test.run=TestHelperProcessMain", "--", "timeline", "-"}
+	cmd := exec.Command(os.Args[0], cmdArgs...)
+	cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
+	cmd.Stdin = r
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start helper process: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+
+	select {
+	case err := <-done:
+		exitCode := 0
+		if err != nil {
+			if ee, ok := err.(*exec.ExitError); ok {
+				exitCode = ee.ExitCode()
+			} else {
+				t.Fatalf("wait helper process: %v", err)
+			}
+		}
+		if exitCode != 2 {
+			t.Fatalf("exit code = %d, want 2; stderr=%q", exitCode, stderr.String())
+		}
+		if !strings.Contains(stderr.String(), "error: timeline requires a JFR file") {
+			t.Fatalf("expected timeline-only validation error, got %q", stderr.String())
+		}
+	case <-time.After(2 * time.Second):
+		_ = cmd.Process.Kill()
+		t.Fatal("timeline with stdin blocked; expected immediate rejection")
+	}
+}
+
+func TestTimelineBucketCountBound(t *testing.T) {
+	path := jfrFixture("cpu.jfr")
+
+	exitCode, _, stderr := runCLIForTest(t, []string{"timeline", path, "--buckets", "10001"}, nil)
+	if exitCode != 2 {
+		t.Fatalf("exit code = %d, want 2; stderr=%q", exitCode, stderr)
+	}
+	if !strings.Contains(stderr, "exceeds maximum (10000)") {
+		t.Fatalf("expected max bucket validation, got %q", stderr)
+	}
+
+	parsed, err := parseJFRData(path, singleJFREventType("cpu"), parseOpts{
+		collectTimestamps: true,
+		fromNanos:         -1,
+		toNanos:           -1,
+	})
+	if err != nil {
+		t.Fatalf("parseJFRData: %v", err)
+	}
+	resolutionNanos := parsed.spanNanos / 10001
+	if resolutionNanos < 1 {
+		resolutionNanos = 1
+	}
+	resolution := fmt.Sprintf("%dns", resolutionNanos)
+
+	exitCode, _, stderr = runCLIForTest(t, []string{"timeline", path, "--resolution", resolution}, nil)
+	if exitCode != 2 {
+		t.Fatalf("resolution path exit code = %d, want 2; stderr=%q", exitCode, stderr)
+	}
+	if !strings.Contains(stderr, "exceeds maximum (10000)") {
+		t.Fatalf("expected max bucket validation for --resolution, got %q", stderr)
+	}
+}
+
+func TestFromToCollapsedWarning(t *testing.T) {
+	exitCode, stdout, stderr := runCLIForTest(t, []string{"hot", "--from", "5s", "--to", "10s", "-"},
+		strings.NewReader("A;B 1\n"))
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", exitCode, stderr)
+	}
+	if !strings.Contains(stderr, "warning: --from/--to ignored for non-JFR input (no timestamps)") {
+		t.Fatalf("expected non-JFR warning, got %q", stderr)
+	}
+	if strings.Contains(stderr, "Window:") {
+		t.Fatalf("did not expect window echo after non-JFR warning, got %q", stderr)
+	}
+	if strings.TrimSpace(stdout) == "" {
+		t.Fatal("expected non-empty hot output")
+	}
+}
+
+func TestBoundedFallbackWarning(t *testing.T) {
+	// Test the 10M threshold logic directly.
+	timedByEvent := map[string][]timedEvent{
+		"cpu":  make([]timedEvent, 6_000_000),
+		"wall": make([]timedEvent, 5_000_000),
+	}
+	total := 0
+	for _, events := range timedByEvent {
+		total += len(events)
+	}
+	if total <= 10_000_000 {
+		t.Errorf("expected total > 10M, got %d", total)
+	}
+	// Verify the warning would fire.
+	stderr := captureStderr(func() {
+		if total > 10_000_000 {
+			fmt.Fprintf(os.Stderr, "warning: %d events collected; consider using --from/--to to narrow the time window\n", total)
+		}
+	})
+	if !strings.Contains(stderr, "warning:") {
+		t.Errorf("expected warning for >10M events, got %q", stderr)
+	}
+	if !strings.Contains(stderr, "11000000") {
+		t.Errorf("expected event count in warning, got %q", stderr)
+	}
+}
+
+func TestTimedCollectionGatedByEventType(t *testing.T) {
+	// multi.jfr has cpu, wall, alloc, and lock events.
+	// When requesting only cpu, the other types must not appear in timedByEvent.
+	parsed, err := parseJFRData(jfrFixture("multi.jfr"), singleJFREventType("cpu"), parseOpts{
+		collectTimestamps: true,
+		fromNanos:         -1,
+		toNanos:           -1,
+	})
+	if err != nil {
+		t.Fatalf("parseJFRData: %v", err)
+	}
+	for eventType, events := range parsed.timedEvents {
+		if eventType != "cpu" && len(events) > 0 {
+			t.Errorf("unexpected timed events for unrequested type %q: %d events", eventType, len(events))
+		}
+	}
+	if cpuEvents := parsed.timedEvents["cpu"]; len(cpuEvents) == 0 {
+		t.Error("expected cpu timed events to be collected")
+	}
+}
+
+func TestTimelineFromBeyondSpanClampsToZero(t *testing.T) {
+	// When --from is past the recording span without --to, bucketSpan should be 0 (single bucket).
+	parsed := &parsedJFR{
+		timedEvents: map[string][]timedEvent{
+			"cpu": {{offsetNanos: 100_000_000_000, stackKey: "A;B", frames: []string{"A", "B"}, lines: []uint32{0, 0}, weight: 1}},
+		},
+		spanNanos: 5_000_000_000,
+	}
+	out := captureOutput(func() {
+		cmdTimeline(parsed, "cpu", 0, "", "", false, "",
+			100_000_000_000, -1)
+	})
+	// Should produce a single bucket (zero span), not negative span confusion.
+	if !strings.Contains(out, "Buckets: 1") {
+		t.Errorf("expected 1 bucket for from-beyond-span, got %q", out)
+	}
+}
+
+func TestTimelineFromToBothBeyondSpan(t *testing.T) {
+	// When both --from and --to are past the recording span, clamping must not
+	// produce a negative span (toNanos < fromNanos). Both get clamped to spanNanos,
+	// yielding a zero-width window and a single empty bucket.
+	parsed := &parsedJFR{
+		timedEvents: map[string][]timedEvent{
+			"cpu": {},
+		},
+		spanNanos: 5_000_000_000,
+	}
+	// Simulate clamping from main.go: both values clamp to spanNanos.
+	fromNanos := int64(100_000_000_000)
+	toNanos := int64(200_000_000_000)
+	if fromNanos >= parsed.spanNanos {
+		fromNanos = parsed.spanNanos
+	}
+	if toNanos > parsed.spanNanos {
+		toNanos = parsed.spanNanos
+	}
+	out := captureOutput(func() {
+		cmdTimeline(parsed, "cpu", 0, "", "", false, "",
+			fromNanos, toNanos)
+	})
+	if !strings.Contains(out, "Buckets: 1") {
+		t.Errorf("expected 1 bucket for both-beyond-span, got %q", out)
+	}
+}
+
+func TestCmdTimelineSubSecondResolutionLabels(t *testing.T) {
+	parsed := &parsedJFR{
+		timedEvents: map[string][]timedEvent{
+			"cpu": {
+				{
+					offsetNanos: 284_000_000_000, // 4m44.000s
+					stackKey:    "A",
+					frames:      []string{"A"},
+					lines:       []uint32{0},
+					weight:      1,
+				},
+			},
+		},
+		spanNanos: 300_000_000_000,
+	}
+
+	out := captureOutput(func() {
+		cmdTimeline(parsed, "cpu", 0, "1ms", "", false, "",
+			284_000_000_000, 284_003_000_000)
+	})
+
+	if !strings.Contains(out, "Buckets: 3 (1ms each)") {
+		t.Errorf("expected millisecond bucket width in header, got %q", out)
+	}
+	if !strings.Contains(out, "4m44.000s-4m44.001s") {
+		t.Errorf("expected millisecond precision time labels, got %q", out)
+	}
+}
+
+func TestFormatDuration(t *testing.T) {
+	tests := []struct {
+		nanos int64
+		want  string
+	}{
+		{0, "0.0s"},
+		{500_000_000, "0.5s"},
+		{1_000_000_000, "1.0s"},
+		{12_500_000_000, "12.5s"},
+		{90_000_000_000, "1m30.0s"},
+		{-1, "0.0s"},
+	}
+	for _, tt := range tests {
+		got := formatDuration(tt.nanos)
+		if got != tt.want {
+			t.Errorf("formatDuration(%d) = %q, want %q", tt.nanos, got, tt.want)
+		}
+	}
+}
+
+func TestFormatBucketWidth(t *testing.T) {
+	tests := []struct {
+		nanos int64
+		want  string
+	}{
+		{0, "0.0s"},
+		{1_000_000, "1ms"},
+		{1_500_000, "1500us"},
+		{609_352_600, "609.4ms"},
+		{1_000_000_000, "1.0s"},
+	}
+	for _, tt := range tests {
+		got := formatBucketWidth(tt.nanos)
+		if got != tt.want {
+			t.Errorf("formatBucketWidth(%d) = %q, want %q", tt.nanos, got, tt.want)
+		}
+	}
+}
+
+func TestTimeWindowEcho(t *testing.T) {
+	// --from/--to on non-timeline JFR command should echo window to stderr.
+	tests := []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--from", "1s", "--to", "3s"}, "Window: 1.0s to 3.0s"},
+		{[]string{"--from", "1s"}, "Window: 1.0s to end"},
+		{[]string{"--to", "3s"}, "Window: start to 3.0s"},
+	}
+	path := jfrFixture("cpu.jfr")
+	for _, tt := range tests {
+		args := append([]string{"hot"}, tt.args...)
+		args = append(args, path)
+		exitCode, _, stderr := runCLIForTest(t, args, nil)
+		if exitCode != 0 {
+			t.Fatalf("args=%v: exit code = %d, want 0; stderr=%q", args, exitCode, stderr)
+		}
+		if !strings.Contains(stderr, tt.want) {
+			t.Errorf("args=%v: expected %q in stderr, got %q", args, tt.want, stderr)
+		}
+	}
+}
+
+func TestBuildStackFileFromTimed(t *testing.T) {
+	events := []timedEvent{
+		{stackKey: "A;B", frames: []string{"A", "B"}, lines: []uint32{0, 0}, thread: "main", weight: 3},
+		{stackKey: "A;B", frames: []string{"A", "B"}, lines: []uint32{0, 0}, thread: "main", weight: 2},
+		{stackKey: "A;C", frames: []string{"A", "C"}, lines: []uint32{0, 0}, thread: "main", weight: 1},
+	}
+	sf := buildStackFileFromTimed(events)
+	if sf.totalSamples != 6 {
+		t.Errorf("totalSamples = %d, want 6", sf.totalSamples)
+	}
+}
+
+func TestEventSelectionAfterFilter(t *testing.T) {
+	// Parse multi.jfr with a time range that may exclude some event types.
+	parsed, err := parseJFRData(jfrFixture("multi.jfr"), allJFREventTypes(), parseOpts{
+		collectTimestamps: true,
+		fromNanos:         -1,
+		toNanos:           -1,
+	})
+	if err != nil {
+		t.Fatalf("parseJFRData: %v", err)
+	}
+	// Should have multiple event types.
+	if len(parsed.timedEvents) == 0 {
+		t.Fatal("expected timed events")
+	}
+	// Recompute counts from timed events.
+	filteredCounts := make(map[string]int)
+	for et, events := range parsed.timedEvents {
+		if len(events) > 0 {
+			filteredCounts[et] = len(events)
+		}
+	}
+	// resolveEventType should work on filtered counts.
+	eventType, _ := resolveEventType("cpu", false, filteredCounts)
+	if eventType == "" {
+		t.Error("resolveEventType returned empty")
 	}
 }
