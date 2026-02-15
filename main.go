@@ -196,6 +196,61 @@ func (f *flags) boolean(keys ...string) bool {
 	return false
 }
 
+type timeRange struct {
+	fromNanos int64
+	toNanos   int64
+	fromStr   string
+	needTimed bool
+}
+
+func parseTimeRangeFlags(f *flags, cmd string) timeRange {
+	fromStr := f.str("from")
+	toStr := f.str("to")
+	hasFrom := fromStr != "" || f.bools["from"]
+	hasTo := toStr != "" || f.bools["to"]
+
+	if hasFrom || hasTo {
+		if cmd == "diff" {
+			fmt.Fprintln(os.Stderr, "error: --from/--to not supported with diff")
+			os.Exit(2)
+		}
+	}
+
+	tr := timeRange{fromNanos: -1, toNanos: -1, fromStr: fromStr}
+	if hasFrom || hasTo {
+		if f.bools["from"] && fromStr == "" {
+			fmt.Fprintln(os.Stderr, "error: --from requires a duration value (e.g. --from 12s)")
+			os.Exit(2)
+		}
+		if f.bools["to"] && toStr == "" {
+			fmt.Fprintln(os.Stderr, "error: --to requires a duration value (e.g. --to 14s)")
+			os.Exit(2)
+		}
+		if fromStr != "" {
+			d, err := time.ParseDuration(fromStr)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error: invalid --from value %q: %v\n", fromStr, err)
+				os.Exit(2)
+			}
+			tr.fromNanos = d.Nanoseconds()
+		}
+		if toStr != "" {
+			d, err := time.ParseDuration(toStr)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error: invalid --to value %q: %v\n", toStr, err)
+				os.Exit(2)
+			}
+			tr.toNanos = d.Nanoseconds()
+		}
+		if tr.fromNanos >= 0 && tr.toNanos >= 0 && tr.toNanos < tr.fromNanos {
+			fmt.Fprintln(os.Stderr, "error: --to must be >= --from")
+			os.Exit(2)
+		}
+		tr.needTimed = true
+	}
+	return tr
+}
+
 func exitTimelineRequiresJFR() {
 	fmt.Fprintln(os.Stderr, "error: timeline requires a JFR file")
 	os.Exit(2)
@@ -264,53 +319,10 @@ func main() {
 		return
 	}
 
-	// --from/--to validation
-	fromStr := f.str("from")
-	toStr := f.str("to")
-	hasFrom := fromStr != "" || f.bools["from"]
-	hasTo := toStr != "" || f.bools["to"]
-
-	if hasFrom || hasTo {
-		if cmd == "diff" {
-			fmt.Fprintln(os.Stderr, "error: --from/--to not supported with diff")
-			os.Exit(2)
-		}
-	}
-
-	var fromNanos, toNanos int64 = -1, -1
-	needTimed := false
-	if hasFrom || hasTo {
-		// Detect bare --from/--to (flag without value)
-		if f.bools["from"] && fromStr == "" {
-			fmt.Fprintln(os.Stderr, "error: --from requires a duration value (e.g. --from 12s)")
-			os.Exit(2)
-		}
-		if f.bools["to"] && toStr == "" {
-			fmt.Fprintln(os.Stderr, "error: --to requires a duration value (e.g. --to 14s)")
-			os.Exit(2)
-		}
-		if fromStr != "" {
-			d, err := time.ParseDuration(fromStr)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "error: invalid --from value %q: %v\n", fromStr, err)
-				os.Exit(2)
-			}
-			fromNanos = d.Nanoseconds()
-		}
-		if toStr != "" {
-			d, err := time.ParseDuration(toStr)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "error: invalid --to value %q: %v\n", toStr, err)
-				os.Exit(2)
-			}
-			toNanos = d.Nanoseconds()
-		}
-		if fromNanos >= 0 && toNanos >= 0 && toNanos < fromNanos {
-			fmt.Fprintln(os.Stderr, "error: --to must be >= --from")
-			os.Exit(2)
-		}
-		needTimed = true
-	}
+	tr := parseTimeRangeFlags(&f, cmd)
+	fromNanos, toNanos := tr.fromNanos, tr.toNanos
+	fromStr := tr.fromStr
+	needTimed := tr.needTimed
 
 	// diff requires two positional args
 	if cmd == "diff" {
