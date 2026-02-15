@@ -1,23 +1,13 @@
 package main
 
 import (
-	"bytes"
-	"io"
 	"os"
 	"strings"
 	"testing"
 )
 
 func captureStderr(f func()) string {
-	old := os.Stderr
-	r, w, _ := os.Pipe()
-	os.Stderr = w
-	f()
-	w.Close()
-	var buf bytes.Buffer
-	io.Copy(&buf, r)
-	os.Stderr = old
-	return buf.String()
+	return captureStream(&os.Stderr, f)
 }
 
 func TestResolveEventTypeSingleAutoSelect(t *testing.T) {

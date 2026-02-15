@@ -22,16 +22,20 @@ import (
 // Test helpers
 // ---------------------------------------------------------------------------
 
-func captureOutput(f func()) string {
-	old := os.Stdout
+func captureStream(stream **os.File, f func()) string {
+	old := *stream
 	r, w, _ := os.Pipe()
-	os.Stdout = w
+	*stream = w
 	f()
 	w.Close()
 	var buf bytes.Buffer
 	io.Copy(&buf, r)
-	os.Stdout = old
+	*stream = old
 	return buf.String()
+}
+
+func captureOutput(f func()) string {
+	return captureStream(&os.Stdout, f)
 }
 
 func makeStackFile(stacks []stack) *stackFile {

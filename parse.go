@@ -13,6 +13,7 @@ import (
 
 	"github.com/grafana/jfr-parser/parser"
 	"github.com/grafana/jfr-parser/parser/types"
+	"github.com/grafana/jfr-parser/parser/types/def"
 )
 
 // ---------------------------------------------------------------------------
@@ -384,6 +385,37 @@ func buildStackFileFromTimed(events []timedEvent) *stackFile {
 	return buildStackFile(agg)
 }
 
+type jfrEventInfo struct {
+	eventType  string
+	stRef      types.StackTraceRef
+	thRef      types.ThreadRef
+	startTicks uint64
+	weight     int
+}
+
+func classifyEvent(p *parser.Parser, typ def.TypeID) (jfrEventInfo, bool) {
+	switch typ {
+	case p.TypeMap.T_EXECUTION_SAMPLE:
+		return jfrEventInfo{"cpu", p.ExecutionSample.StackTrace, p.ExecutionSample.SampledThread, p.ExecutionSample.StartTime, 1}, true
+	case p.TypeMap.T_WALL_CLOCK_SAMPLE:
+		weight := int(p.WallClockSample.Samples)
+		if weight < 1 {
+			weight = 1
+		}
+		return jfrEventInfo{"wall", p.WallClockSample.StackTrace, p.WallClockSample.SampledThread, p.WallClockSample.StartTime, weight}, true
+	case p.TypeMap.T_ALLOC_IN_NEW_TLAB:
+		return jfrEventInfo{"alloc", p.ObjectAllocationInNewTLAB.StackTrace, p.ObjectAllocationInNewTLAB.EventThread, p.ObjectAllocationInNewTLAB.StartTime, 1}, true
+	case p.TypeMap.T_ALLOC_OUTSIDE_TLAB:
+		return jfrEventInfo{"alloc", p.ObjectAllocationOutsideTLAB.StackTrace, p.ObjectAllocationOutsideTLAB.EventThread, p.ObjectAllocationOutsideTLAB.StartTime, 1}, true
+	case p.TypeMap.T_ALLOC_SAMPLE:
+		return jfrEventInfo{"alloc", p.ObjectAllocationSample.StackTrace, p.ObjectAllocationSample.EventThread, p.ObjectAllocationSample.StartTime, 1}, true
+	case p.TypeMap.T_MONITOR_ENTER:
+		return jfrEventInfo{"lock", p.JavaMonitorEnter.StackTrace, p.JavaMonitorEnter.EventThread, p.JavaMonitorEnter.StartTime, 1}, true
+	default:
+		return jfrEventInfo{}, false
+	}
+}
+
 func parseJFRData(path string, stackEvents map[string]struct{}, opts parseOpts) (*parsedJFR, error) {
 	buf, err := readJFRBytes(path)
 	if err != nil {
@@ -421,60 +453,19 @@ func parseJFRData(path string, stackEvents map[string]struct{}, opts parseOpts) 
 			return nil, fmt.Errorf("parse event: %w", err)
 		}
 
-		var eventType string
-		var stRef types.StackTraceRef
-		var thRef types.ThreadRef
-		var startTicks uint64
-		weight := 1
-
-		switch typ {
-		case p.TypeMap.T_EXECUTION_SAMPLE:
-			eventType = "cpu"
-			stRef = p.ExecutionSample.StackTrace
-			thRef = p.ExecutionSample.SampledThread
-			startTicks = p.ExecutionSample.StartTime
-		case p.TypeMap.T_WALL_CLOCK_SAMPLE:
-			eventType = "wall"
-			stRef = p.WallClockSample.StackTrace
-			thRef = p.WallClockSample.SampledThread
-			startTicks = p.WallClockSample.StartTime
-			weight = int(p.WallClockSample.Samples)
-			if weight < 1 {
-				weight = 1
-			}
-		case p.TypeMap.T_ALLOC_IN_NEW_TLAB:
-			eventType = "alloc"
-			stRef = p.ObjectAllocationInNewTLAB.StackTrace
-			thRef = p.ObjectAllocationInNewTLAB.EventThread
-			startTicks = p.ObjectAllocationInNewTLAB.StartTime
-		case p.TypeMap.T_ALLOC_OUTSIDE_TLAB:
-			eventType = "alloc"
-			stRef = p.ObjectAllocationOutsideTLAB.StackTrace
-			thRef = p.ObjectAllocationOutsideTLAB.EventThread
-			startTicks = p.ObjectAllocationOutsideTLAB.StartTime
-		case p.TypeMap.T_ALLOC_SAMPLE:
-			eventType = "alloc"
-			stRef = p.ObjectAllocationSample.StackTrace
-			thRef = p.ObjectAllocationSample.EventThread
-			startTicks = p.ObjectAllocationSample.StartTime
-		case p.TypeMap.T_MONITOR_ENTER:
-			eventType = "lock"
-			stRef = p.JavaMonitorEnter.StackTrace
-			thRef = p.JavaMonitorEnter.EventThread
-			startTicks = p.JavaMonitorEnter.StartTime
-		}
-		if eventType == "" {
+		info, ok := classifyEvent(p, typ)
+		if !ok {
 			continue
 		}
 
-		counts[eventType]++
+		counts[info.eventType]++
 
 		if opts.collectTimestamps {
-			if _, ok := stackEvents[eventType]; !ok {
+			if _, ok := stackEvents[info.eventType]; !ok {
 				continue
 			}
 			hdr := p.ChunkHeader()
-			offsetNanos := ticksToNanos(startTicks, hdr.StartTicks, hdr.StartNanos, uint64(originNanos), hdr.TicksPerSecond)
+			offsetNanos := ticksToNanos(info.startTicks, hdr.StartTicks, hdr.StartNanos, uint64(originNanos), hdr.TicksPerSecond)
 
 			// Time-range filtering: skip events outside the window.
 			if opts.fromNanos >= 0 && offsetNanos < opts.fromNanos {
@@ -484,25 +475,25 @@ func parseJFRData(path string, stackEvents map[string]struct{}, opts parseOpts) 
 				continue
 			}
 
-			cached := resolveStackTraceCached(p, stackCache, stRef)
+			cached := resolveStackTraceCached(p, stackCache, info.stRef)
 			if len(cached.frames) == 0 {
 				continue
 			}
-			thread := resolveThread(p, thRef)
-			timedByEvent[eventType] = append(timedByEvent[eventType], timedEvent{
+			thread := resolveThread(p, info.thRef)
+			timedByEvent[info.eventType] = append(timedByEvent[info.eventType], timedEvent{
 				offsetNanos: offsetNanos,
 				stackKey:    cached.key,
 				frames:      cached.frames,
 				lines:       cached.lines,
 				thread:      thread,
-				weight:      weight,
+				weight:      info.weight,
 			})
 		} else {
-			agg, ok := aggByEvent[eventType]
+			agg, ok := aggByEvent[info.eventType]
 			if !ok {
 				continue
 			}
-			appendJFRStackSample(p, stackCache, agg, stRef, thRef, weight)
+			appendJFRStackSample(p, stackCache, agg, info.stRef, info.thRef, info.weight)
 		}
 	}
 
