@@ -125,6 +125,16 @@ func TestShortName(t *testing.T) {
 		{"App.process", "App.process"},
 		{"process", "process"},
 		{"a.b.c.D.run", "D.run"},
+
+		// Native frames from shared libraries
+		{"libc.so.6.__sched_yield", "__sched_yield"},
+		{"libc.so.6.epoll_wait", "epoll_wait"},
+		{"libc.so.6.__futex_abstimed_wait_common", "__futex_abstimed_wait_common"},
+		{"libasyncProfiler.so.WallClock::signalHandler", "WallClock::signalHandler"},
+		{"libquestdb.so.Java_io_questdb_std_Vect_binarySearch64Bit", "Java_io_questdb_std_Vect_binarySearch64Bit"},
+		{"libstdc++.so.6.some_function", "some_function"},
+		{"ld-linux-x86-64.so.2.dl_main", "dl_main"},
+		{"libpthread.so.0.__pthread_mutex_lock", "__pthread_mutex_lock"},
 	}
 	for _, tt := range tests {
 		got := shortName(tt.input)

@@ -7,9 +7,35 @@ import (
 )
 
 func shortName(frame string) string {
-	// "com/example/App.process" → "App.process"
-	// "com.example.App.process" → "App.process"
 	base := strings.ReplaceAll(frame, "/", ".")
+
+	// Native frames from shared libraries: "libc.so.6.__sched_yield" → "__sched_yield"
+	if soIdx := strings.Index(base, ".so."); soIdx >= 0 {
+		after := base[soIdx+4:]
+		// Skip version components (all-digit parts like "6" in libc.so.6)
+		for {
+			dot := strings.IndexByte(after, '.')
+			if dot < 0 {
+				break
+			}
+			allDigits := true
+			for _, c := range after[:dot] {
+				if c < '0' || c > '9' {
+					allDigits = false
+					break
+				}
+			}
+			if !allDigits {
+				break
+			}
+			after = after[dot+1:]
+		}
+		if after != "" {
+			return after
+		}
+	}
+
+	// Java frames: "com/example/App.process" → "App.process"
 	parts := strings.Split(base, ".")
 	if len(parts) >= 2 {
 		return parts[len(parts)-2] + "." + parts[len(parts)-1]
