@@ -9,17 +9,7 @@ import (
 	"time"
 )
 
-func cmdTimeline(parsed *parsedJFR, eventType string,
-	buckets int, resolution string, method string, topMethod bool,
-	thread string, fromNanos, toNanos int64) {
-
-	events := parsed.timedEvents[eventType]
-	span := parsed.spanNanos
-
-	// Determine effective bucket origin and span.
-	var bucketOrigin int64
-	var bucketSpan int64
-
+func resolveBucketRange(fromNanos, toNanos, span int64, events []timedEvent) (bucketOrigin, bucketSpan int64) {
 	if fromNanos >= 0 {
 		bucketOrigin = fromNanos
 	}
@@ -43,50 +33,14 @@ func cmdTimeline(parsed *parsedJFR, eventType string,
 		}
 		bucketSpan = maxOffset - bucketOrigin
 	}
+	return
+}
 
-	// Thread filtering for timeline (applied here, not in main).
-	if thread != "" {
-		var filtered []timedEvent
-		for i := range events {
-			if strings.Contains(events[i].thread, thread) {
-				filtered = append(filtered, events[i])
-			}
-		}
-		events = filtered
-	}
-
-	// Count total weight before method filtering.
-	var totalWeight int
-	for i := range events {
-		totalWeight += events[i].weight
-	}
-
-	// Method filtering.
-	var matchedWeight int
-	if method != "" {
-		var methodFiltered []timedEvent
-		for i := range events {
-			for _, fr := range events[i].frames {
-				if matchesMethod(fr, method) {
-					methodFiltered = append(methodFiltered, events[i])
-					matchedWeight += events[i].weight
-					break
-				}
-			}
-		}
-		events = methodFiltered
-	} else {
-		matchedWeight = totalWeight
-	}
-
-	// Compute bucket count.
-	var bucketWidth int64
-	numBuckets := buckets
+func computeBucketWidth(bucketSpan int64, buckets int, resolution string) (numBuckets int, bucketWidth int64) {
+	numBuckets = buckets
 
 	if bucketSpan == 0 {
-		// Zero-span: single event or empty. Force 1 bucket.
-		numBuckets = 1
-		bucketWidth = 0
+		return 1, 0
 	} else if resolution != "" {
 		d, err := time.ParseDuration(resolution)
 		if err != nil {
@@ -123,6 +77,52 @@ func cmdTimeline(parsed *parsedJFR, eventType string,
 			bucketWidth = 1
 		}
 	}
+	return
+}
+
+func cmdTimeline(parsed *parsedJFR, eventType string,
+	buckets int, resolution string, method string, topMethod bool,
+	thread string, fromNanos, toNanos int64) {
+
+	events := parsed.timedEvents[eventType]
+	bucketOrigin, bucketSpan := resolveBucketRange(fromNanos, toNanos, parsed.spanNanos, events)
+
+	// Thread filtering for timeline (applied here, not in main).
+	if thread != "" {
+		var filtered []timedEvent
+		for i := range events {
+			if strings.Contains(events[i].thread, thread) {
+				filtered = append(filtered, events[i])
+			}
+		}
+		events = filtered
+	}
+
+	// Count total weight before method filtering.
+	var totalWeight int
+	for i := range events {
+		totalWeight += events[i].weight
+	}
+
+	// Method filtering.
+	var matchedWeight int
+	if method != "" {
+		var methodFiltered []timedEvent
+		for i := range events {
+			for _, fr := range events[i].frames {
+				if matchesMethod(fr, method) {
+					methodFiltered = append(methodFiltered, events[i])
+					matchedWeight += events[i].weight
+					break
+				}
+			}
+		}
+		events = methodFiltered
+	} else {
+		matchedWeight = totalWeight
+	}
+
+	numBuckets, bucketWidth := computeBucketWidth(bucketSpan, buckets, resolution)
 
 	// Assign events to buckets.
 	bucketCounts := make([]int, numBuckets)

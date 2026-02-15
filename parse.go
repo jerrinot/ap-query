@@ -391,8 +391,10 @@ func parseJFRData(path string, stackEvents map[string]struct{}, opts parseOpts) 
 	}
 
 	// Scan chunk headers for origin/span before event parsing.
-	var originNanos, spanNanos int64
-	originNanos, spanNanos, _ = scanChunkHeaders(buf)
+	originNanos, spanNanos, scanErr := scanChunkHeaders(buf)
+	if scanErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: %v; timeline data may be unavailable\n", scanErr)
+	}
 
 	p := parser.NewParser(buf, parser.Options{})
 	counts := make(map[string]int)
