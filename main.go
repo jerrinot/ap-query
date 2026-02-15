@@ -85,6 +85,7 @@ Command-specific flags:
   --buckets N                  Number of time buckets for timeline (default: auto ~20).
   --resolution DURATION        Fixed bucket width for timeline (e.g. 1s, 500ms). Overrides --buckets.
   --no-top-method              Omit per-bucket top method annotation from timeline (shown by default).
+  --no-idle                    Remove stacks with idle leaf frames (futex, sched_yield, epoll_wait, sleep, park).
 
 Examples:
   ap-query info profile.jfr
@@ -128,7 +129,7 @@ func parseFlags(args []string) flags {
 			key := strings.TrimLeft(a, "-")
 			// Known boolean flags
 			switch key {
-			case "fqn", "include-callers", "force", "project", "claude", "codex", "stdout", "top-method", "no-top-method":
+			case "fqn", "include-callers", "force", "project", "claude", "codex", "stdout", "top-method", "no-top-method", "no-idle":
 				f.bools[key] = true
 				i++
 				continue
@@ -495,6 +496,15 @@ func main() {
 				thread, sf.totalSamples, totalBefore, pctOf(sf.totalSamples, totalBefore))
 		}
 	}
+	noIdle := f.boolean("no-idle")
+	if noIdle && cmd != "timeline" {
+		totalBefore := sf.totalSamples
+		sf = sf.filterIdle()
+		if totalBefore > 0 {
+			fmt.Fprintf(os.Stderr, "Idle filter: %d/%d samples remain (%.1f%% idle removed)\n",
+				sf.totalSamples, totalBefore, pctOf(totalBefore-sf.totalSamples, totalBefore))
+		}
+	}
 	if isJFR && cmd != "info" && cmd != "timeline" {
 		printEventSelectionForSingle(eventType, eventReason, eventCounts)
 	}
@@ -608,7 +618,7 @@ func main() {
 		resolution := f.str("resolution")
 		method := f.str("m", "method")
 		topMethod := !f.boolean("no-top-method")
-		cmdTimeline(parsed, eventType, buckets, resolution, method, topMethod, thread, fromNanos, toNanos)
+		cmdTimeline(parsed, eventType, buckets, resolution, method, topMethod, noIdle, thread, fromNanos, toNanos)
 
 	case "info":
 		expand := f.intVal([]string{"expand"}, 3)

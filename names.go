@@ -60,6 +60,48 @@ func matchesHide(frame string, re *regexp.Regexp) bool {
 	return re.MatchString(normalized) || re.MatchString(shortName(frame))
 }
 
+// idleJavaPatterns match Java idle frames by exact class name and method
+// prefix on the short name (e.g. "Object.wait", "Object.wait0").
+var idleJavaPatterns = []struct{ class, method string }{
+	{"Thread", "sleep"},
+	{"Object", "wait"},
+	{"LockSupport", "park"},
+	{"Unsafe", "park"},
+}
+
+// idleNativePatterns match native idle frames by prefix on the short name.
+var idleNativePatterns = []string{
+	"__futex",
+	"__sched_yield",
+	"epoll_wait",
+	"pthread_cond_wait",
+	"pthread_cond_timedwait",
+}
+
+func isIdleLeaf(frame string) bool {
+	short := shortName(frame)
+
+	// Java frames: exact class + method prefix (avoids matching
+	// e.g. TransactionObject.waitFor against Object.wait).
+	if dot := strings.LastIndexByte(short, '.'); dot >= 0 {
+		class := short[:dot]
+		method := short[dot+1:]
+		for _, p := range idleJavaPatterns {
+			if class == p.class && strings.HasPrefix(method, p.method) {
+				return true
+			}
+		}
+	}
+
+	// Native frames (no dot): prefix match.
+	for _, p := range idleNativePatterns {
+		if strings.HasPrefix(short, p) {
+			return true
+		}
+	}
+	return false
+}
+
 func truncate(n, top int) int {
 	if top > 0 && top < n {
 		return top

@@ -46,6 +46,19 @@ func (sf *stackFile) filterByThread(thread string) *stackFile {
 	return out
 }
 
+func (sf *stackFile) filterIdle() *stackFile {
+	out := &stackFile{}
+	for i := range sf.stacks {
+		st := &sf.stacks[i]
+		if len(st.frames) > 0 && isIdleLeaf(st.frames[len(st.frames)-1]) {
+			continue
+		}
+		out.stacks = append(out.stacks, *st)
+		out.totalSamples += st.count
+	}
+	return out
+}
+
 func (sf *stackFile) hideFrames(re *regexp.Regexp) *stackFile {
 	out := &stackFile{totalSamples: sf.totalSamples}
 	for i := range sf.stacks {

@@ -894,6 +894,65 @@ func TestFilterByThread(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// TestIsIdleLeaf
+// ---------------------------------------------------------------------------
+
+func TestIsIdleLeaf(t *testing.T) {
+	tests := []struct {
+		frame string
+		want  bool
+	}{
+		{"libc.so.6.__futex_abstimed_wait_common", true},
+		{"libc.so.6.__sched_yield", true},
+		{"libc.so.6.epoll_wait", true},
+		{"java/lang/Thread.sleep", true},
+		{"java/lang/Object.wait", true},
+		{"java/util/concurrent/locks/LockSupport.park", true},
+		{"java/util/concurrent/locks/LockSupport.parkNanos", true},
+		{"sun/misc/Unsafe.park", true},
+		{"libc.so.6.pthread_cond_wait", true},
+		{"libc.so.6.pthread_cond_timedwait", true},
+		// JDK variants with numeric suffixes
+		{"java/lang/Object.wait0", true},
+		{"java/lang/Thread.sleep0", true},
+
+		// Non-idle
+		{"io/questdb/mp/Worker.run", false},
+		{"java/util/HashMap.resize", false},
+		{"libc.so.6.__memmove_avx_unaligned_erms", false},
+
+		// False-positive prevention: class name contains idle class as substring
+		{"com/example/TransactionObject.waitFor", false},
+		{"com/example/WorkerThread.sleepUntilReady", false},
+		{"com/example/MyThread.sleeper", false},
+		{"com/example/ObjectMapper.waitForResult", false},
+	}
+	for _, tt := range tests {
+		got := isIdleLeaf(tt.frame)
+		if got != tt.want {
+			t.Errorf("isIdleLeaf(%q) = %v, want %v", tt.frame, got, tt.want)
+		}
+	}
+}
+
+func TestFilterIdle(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "B.b"}, lines: []uint32{0, 0}, count: 10},
+		{frames: []string{"A.a", "java/lang/Thread.sleep"}, lines: []uint32{0, 0}, count: 20},
+		{frames: []string{"C.c", "libc.so.6.__futex_abstimed_wait_common"}, lines: []uint32{0, 0}, count: 30},
+		{frames: []string{"D.d"}, lines: []uint32{0}, count: 5},
+	})
+
+	filtered := sf.filterIdle()
+	if len(filtered.stacks) != 2 {
+		t.Errorf("expected 2 non-idle stacks, got %d", len(filtered.stacks))
+	}
+	if filtered.totalSamples != 15 {
+		t.Errorf("expected totalSamples=15, got %d", filtered.totalSamples)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // TestParseFlags
 // ---------------------------------------------------------------------------
 
@@ -4687,7 +4746,7 @@ func TestCmdTimeline(t *testing.T) {
 		t.Fatalf("parseJFRData: %v", err)
 	}
 	out := captureOutput(func() {
-		cmdTimeline(parsed, "cpu", 5, "", "", false, "", -1, -1)
+		cmdTimeline(parsed, "cpu", 5, "", "", false, false, "", -1, -1)
 	})
 	if !strings.Contains(out, "Duration:") {
 		t.Error("expected Duration in header")
@@ -4725,7 +4784,7 @@ func TestCmdTimelineMethod(t *testing.T) {
 		t.Fatalf("parseJFRData: %v", err)
 	}
 	out := captureOutput(func() {
-		cmdTimeline(parsed, "cpu", 5, "", "Workload", false, "", -1, -1)
+		cmdTimeline(parsed, "cpu", 5, "", "Workload", false, false, "", -1, -1)
 	})
 	if !strings.Contains(out, "Matched:") {
 		t.Errorf("expected 'Matched:' in header with --method, got %q", out)
@@ -4742,7 +4801,7 @@ func TestCmdTimelineTopMethod(t *testing.T) {
 		t.Fatalf("parseJFRData: %v", err)
 	}
 	out := captureOutput(func() {
-		cmdTimeline(parsed, "cpu", 5, "", "", true, "", -1, -1)
+		cmdTimeline(parsed, "cpu", 5, "", "", true, false, "", -1, -1)
 	})
 	if !strings.Contains(out, "Top Method") {
 		t.Error("expected 'Top Method' column header")
@@ -4771,7 +4830,7 @@ func TestCmdTimelineTopMethodAggregatesLeafSelfCounts(t *testing.T) {
 		spanNanos: 1_000_000_000,
 	}
 	out := captureOutput(func() {
-		cmdTimeline(parsed, "cpu", 1, "", "", true, "", -1, -1)
+		cmdTimeline(parsed, "cpu", 1, "", "", true, false, "", -1, -1)
 	})
 
 	// X=6, Y=8, total=14 => Y is top at 57%.
@@ -4789,7 +4848,7 @@ func TestCmdTimelineZeroSpan(t *testing.T) {
 		spanNanos: 0,
 	}
 	out := captureOutput(func() {
-		cmdTimeline(parsed, "cpu", 0, "", "", false, "", -1, -1)
+		cmdTimeline(parsed, "cpu", 0, "", "", false, false, "", -1, -1)
 	})
 	if !strings.Contains(out, "Buckets: 1") {
 		t.Errorf("expected 1 bucket for zero-span, got %q", out)
@@ -4822,7 +4881,7 @@ func TestCmdTimelineResolution(t *testing.T) {
 		t.Fatalf("parseJFRData: %v", err)
 	}
 	out := captureOutput(func() {
-		cmdTimeline(parsed, "cpu", 0, "1s", "", false, "", -1, -1)
+		cmdTimeline(parsed, "cpu", 0, "1s", "", false, false, "", -1, -1)
 	})
 	if !strings.Contains(out, "1.0s each") {
 		t.Errorf("expected '1.0s each' in header, got %q", out)
@@ -4839,7 +4898,7 @@ func TestCmdTimelineFromTo(t *testing.T) {
 		t.Fatalf("parseJFRData: %v", err)
 	}
 	out := captureOutput(func() {
-		cmdTimeline(parsed, "cpu", 5, "", "", false, "",
+		cmdTimeline(parsed, "cpu", 5, "", "", false, false, "",
 			1_000_000_000, 3_000_000_000)
 	})
 	// Duration header should show the window span (2s), not full recording.
@@ -4865,7 +4924,7 @@ func TestCmdTimelineFromOnly(t *testing.T) {
 		t.Fatalf("parseJFRData: %v", err)
 	}
 	out := captureOutput(func() {
-		cmdTimeline(parsed, "cpu", 5, "", "", false, "",
+		cmdTimeline(parsed, "cpu", 5, "", "", false, false, "",
 			1_000_000_000, -1)
 	})
 	// Bucket origin should start at 1s.
@@ -5102,7 +5161,7 @@ func TestTimelineFromBeyondSpanClampsToZero(t *testing.T) {
 		spanNanos: 5_000_000_000,
 	}
 	out := captureOutput(func() {
-		cmdTimeline(parsed, "cpu", 0, "", "", false, "",
+		cmdTimeline(parsed, "cpu", 0, "", "", false, false, "",
 			100_000_000_000, -1)
 	})
 	// Should produce a single bucket (zero span), not negative span confusion.
@@ -5131,7 +5190,7 @@ func TestTimelineFromToBothBeyondSpan(t *testing.T) {
 		toNanos = parsed.spanNanos
 	}
 	out := captureOutput(func() {
-		cmdTimeline(parsed, "cpu", 0, "", "", false, "",
+		cmdTimeline(parsed, "cpu", 0, "", "", false, false, "",
 			fromNanos, toNanos)
 	})
 	if !strings.Contains(out, "Buckets: 1") {
@@ -5156,7 +5215,7 @@ func TestCmdTimelineSubSecondResolutionLabels(t *testing.T) {
 	}
 
 	out := captureOutput(func() {
-		cmdTimeline(parsed, "cpu", 0, "1ms", "", false, "",
+		cmdTimeline(parsed, "cpu", 0, "1ms", "", false, false, "",
 			284_000_000_000, 284_003_000_000)
 	})
 

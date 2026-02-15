@@ -82,10 +82,33 @@ func computeBucketWidth(bucketSpan int64, buckets int, resolution string) (numBu
 
 func cmdTimeline(parsed *parsedJFR, eventType string,
 	buckets int, resolution string, method string, topMethod bool,
-	thread string, fromNanos, toNanos int64) {
+	noIdle bool, thread string, fromNanos, toNanos int64) {
 
 	events := parsed.timedEvents[eventType]
 	bucketOrigin, bucketSpan := resolveBucketRange(fromNanos, toNanos, parsed.spanNanos, events)
+
+	// Idle filtering for timeline.
+	if noIdle {
+		var totalBefore int
+		for i := range events {
+			totalBefore += events[i].weight
+		}
+		var filtered []timedEvent
+		for i := range events {
+			if len(events[i].frames) == 0 || !isIdleLeaf(events[i].frames[len(events[i].frames)-1]) {
+				filtered = append(filtered, events[i])
+			}
+		}
+		events = filtered
+		var filteredWeight int
+		for i := range events {
+			filteredWeight += events[i].weight
+		}
+		if totalBefore > 0 {
+			fmt.Fprintf(os.Stderr, "Idle filter: %d/%d samples remain (%.1f%% idle removed)\n",
+				filteredWeight, totalBefore, pctOf(totalBefore-filteredWeight, totalBefore))
+		}
+	}
 
 	// Thread filtering for timeline (applied here, not in main).
 	if thread != "" {

@@ -50,6 +50,7 @@ Use `{{ASPROF_PATH}}` to record profiles. Common invocations:
 - **alloc** / **lock** — allocation and lock-contention hotspots.
 
 When unsure, start with `cpu`. Switch to `wall` if the profile shows low CPU but high latency.
+Use `--no-idle` with wall to strip idle leaf frames (futex, sleep, park, epoll_wait) and see only active work.
 
 ## Time-range filtering (`--from`/`--to`)
 
