@@ -136,7 +136,19 @@ func readJFRBytes(path string) ([]byte, error) {
 		defer gr.Close()
 		return io.ReadAll(gr)
 	}
-	return io.ReadAll(f)
+
+	// Pre-allocate buffer for non-gzipped files to avoid repeated
+	// slice growing (significant for large files).
+	info, err := f.Stat()
+	if err != nil {
+		return io.ReadAll(f)
+	}
+	buf := make([]byte, info.Size())
+	_, err = io.ReadFull(f, buf)
+	if err != nil {
+		return nil, err
+	}
+	return buf, nil
 }
 
 // stackKey is used to aggregate identical stacks.

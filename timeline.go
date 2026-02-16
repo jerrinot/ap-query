@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -82,7 +83,7 @@ func computeBucketWidth(bucketSpan int64, buckets int, resolution string) (numBu
 
 func cmdTimeline(parsed *parsedJFR, eventType string,
 	buckets int, resolution string, method string, topMethod bool,
-	noIdle bool, thread string, fromNanos, toNanos int64) {
+	noIdle bool, hide *regexp.Regexp, thread string, fromNanos, toNanos int64) {
 
 	events := parsed.timedEvents[eventType]
 	bucketOrigin, bucketSpan := resolveBucketRange(fromNanos, toNanos, parsed.spanNanos, events)
@@ -107,6 +108,19 @@ func cmdTimeline(parsed *parsedJFR, eventType string,
 		if totalBefore > 0 {
 			fmt.Fprintf(os.Stderr, "Idle filter: %d/%d samples remain (%.1f%% idle removed)\n",
 				filteredWeight, totalBefore, pctOf(totalBefore-filteredWeight, totalBefore))
+		}
+	}
+
+	// Hide matching frames so they don't appear as the hot method.
+	if hide != nil {
+		for i := range events {
+			var frames []string
+			for _, fr := range events[i].frames {
+				if !matchesHide(fr, hide) {
+					frames = append(frames, fr)
+				}
+			}
+			events[i].frames = frames
 		}
 	}
 
@@ -219,7 +233,7 @@ func cmdTimeline(parsed *parsedJFR, eventType string,
 
 	// Print column header.
 	if topMethod {
-		fmt.Printf("%-17s %7s  %-40s  %s\n", "Time", "Samples", "", "Top Method")
+		fmt.Printf("%-17s %7s  %-40s  %s\n", "Time", "Samples", "", "Hot Method (self)")
 	} else {
 		fmt.Printf("%-17s %7s\n", "Time", "Samples")
 	}

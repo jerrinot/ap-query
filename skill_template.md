@@ -27,7 +27,7 @@ Use `{{ASPROF_PATH}}` to record profiles. Common invocations:
 
 ## Workflow
 
-1. **Triage**: `{{AP_QUERY_PATH}} info profile.jfr` — events, top threads, top 20 hot methods.
+1. **Triage**: `{{AP_QUERY_PATH}} info profile.jfr` — events, CPU vs WALL thread-group comparison (when both exist), top threads, top 20 hot methods.
 2. **Drill down**: `{{AP_QUERY_PATH}} tree profile.jfr -m HashMap.resize --depth 6 --min-pct 0.5`
    Use `--hide REGEX` with tree, trace, or callers to remove framework/wrapper frames before analysis
    (e.g. `--hide "Thread\.(run|start)"` strips thread boilerplate).
@@ -67,7 +67,7 @@ Combine with `timeline` to first identify spikes, then zoom in with `--from`/`--
 - `--buckets N` — number of time buckets (default: auto ~20).
 - `--resolution DURATION` — fixed bucket width (e.g. `1s`, `500ms`). Overrides `--buckets`.
 - `-m METHOD` / `--method METHOD` — only count samples where the stack contains METHOD.
-- `--no-top-method` — omit per-bucket top method annotation (shown by default).
+- `--no-top-method` — omit per-bucket hot method (by self time) annotation (shown by default).
 - Time labels automatically increase precision for sub-second buckets (for example, `4m44.000s-4m44.001s` at `--resolution 1ms`).
 
 ## Threads

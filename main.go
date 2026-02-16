@@ -80,7 +80,7 @@ Command-specific flags:
   --expand N                   Auto-expand top N hot methods in info (default: 3, 0=off).
   --top-threads N              Threads shown in info (default: 10, 0=all).
   --top-methods N              Hot methods shown in info (default: 20, 0=all).
-  --hide REGEX                 Remove frames matching regex from stacks before analysis (tree, trace, callers).
+  --hide REGEX                 Remove frames matching regex from stacks before analysis (tree, trace, callers, timeline).
   --include-callers            Include caller frames in filter output.
   --buckets N                  Number of time buckets for timeline (default: auto ~20).
   --resolution DURATION        Fixed bucket width for timeline (e.g. 1s, 500ms). Overrides --buckets.
@@ -618,17 +618,46 @@ func main() {
 		resolution := f.str("resolution")
 		method := f.str("m", "method")
 		topMethod := !f.boolean("no-top-method")
-		cmdTimeline(parsed, eventType, buckets, resolution, method, topMethod, noIdle, thread, fromNanos, toNanos)
+		var hideRe *regexp.Regexp
+		if hide := f.str("hide"); hide != "" {
+			re, err := regexp.Compile(hide)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error: invalid --hide regex: %v\n", err)
+				os.Exit(2)
+			}
+			hideRe = re
+		}
+		cmdTimeline(parsed, eventType, buckets, resolution, method, topMethod, noIdle, hideRe, thread, fromNanos, toNanos)
 
 	case "info":
 		expand := f.intVal([]string{"expand"}, 3)
 		topThreads := f.intVal([]string{"top-threads"}, 10)
 		topMethods := f.intVal([]string{"top-methods"}, 20)
 		var spanNanos int64
+		var infoStacksByEvent map[string]*stackFile
 		if parsed != nil {
 			spanNanos = parsed.spanNanos
+			if thread == "" {
+				infoStacksByEvent = parsed.stacksByEvent
+				if noIdle && infoStacksByEvent != nil {
+					filtered := make(map[string]*stackFile, len(infoStacksByEvent))
+					for k, v := range infoStacksByEvent {
+						filtered[k] = v.filterIdle()
+					}
+					infoStacksByEvent = filtered
+				}
+			}
 		}
-		cmdInfo(sf, eventType, isJFR, eventCounts, expand, topThreads, topMethods, spanNanos)
+		cmdInfo(sf, infoOpts{
+			eventType:     eventType,
+			isJFR:         isJFR,
+			eventCounts:   eventCounts,
+			expand:        expand,
+			topThreads:    topThreads,
+			topMethods:    topMethods,
+			spanNanos:     spanNanos,
+			stacksByEvent: infoStacksByEvent,
+		})
 
 	default:
 		usage()

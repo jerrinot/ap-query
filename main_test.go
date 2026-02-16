@@ -478,7 +478,7 @@ func TestCmdInfo(t *testing.T) {
 	})
 
 	out := captureOutput(func() {
-		cmdInfo(sf, "cpu", true, map[string]int{"cpu": 15}, 0, 5, 10, 0)
+		cmdInfo(sf, infoOpts{eventType: "cpu", isJFR: true, eventCounts: map[string]int{"cpu": 15}, topThreads: 5, topMethods: 10})
 	})
 
 	if !strings.Contains(out, "=== THREADS (top") {
@@ -507,7 +507,7 @@ func TestCmdInfoDurationHeader(t *testing.T) {
 	})
 
 	out := captureOutput(func() {
-		cmdInfo(sf, "cpu", true, map[string]int{"cpu": 100}, 0, 5, 10, 30_000_000_000) // 30s
+		cmdInfo(sf, infoOpts{eventType: "cpu", isJFR: true, eventCounts: map[string]int{"cpu": 100}, topThreads: 5, topMethods: 10, spanNanos: 30_000_000_000}) // 30s
 	})
 
 	if !strings.Contains(out, "Duration: 30.0s") {
@@ -528,7 +528,7 @@ func TestCmdInfoNoDurationForNonJFR(t *testing.T) {
 	})
 
 	out := captureOutput(func() {
-		cmdInfo(sf, "cpu", false, nil, 0, 5, 10, 0)
+		cmdInfo(sf, infoOpts{eventType: "cpu", topThreads: 5, topMethods: 10})
 	})
 
 	if strings.Contains(out, "Duration:") {
@@ -542,7 +542,7 @@ func TestCmdInfoAlsoAvailable(t *testing.T) {
 	})
 
 	out := captureOutput(func() {
-		cmdInfo(sf, "wall", true, map[string]int{"wall": 10, "cpu": 200, "alloc": 50}, 0, 5, 10, 0)
+		cmdInfo(sf, infoOpts{eventType: "wall", isJFR: true, eventCounts: map[string]int{"wall": 10, "cpu": 200, "alloc": 50}, topThreads: 5, topMethods: 10})
 	})
 
 	if !strings.Contains(out, "Event: wall") {
@@ -567,7 +567,7 @@ func TestCmdInfoExpand(t *testing.T) {
 	})
 
 	out := captureOutput(func() {
-		cmdInfo(sf, "cpu", false, nil, 2, 10, 20, 0)
+		cmdInfo(sf, infoOpts{eventType: "cpu", expand: 2, topThreads: 10, topMethods: 20})
 	})
 
 	// Should have drill-down sections for top 2 methods (C.c and B.b)
@@ -597,7 +597,7 @@ func TestCmdInfoExpandZero(t *testing.T) {
 	})
 
 	out := captureOutput(func() {
-		cmdInfo(sf, "cpu", false, nil, 0, 10, 20, 0)
+		cmdInfo(sf, infoOpts{eventType: "cpu", topThreads: 10, topMethods: 20})
 	})
 
 	if strings.Contains(out, "DRILL-DOWN") {
@@ -612,7 +612,7 @@ func TestCmdInfoExpandNoLineInfo(t *testing.T) {
 	})
 
 	out := captureOutput(func() {
-		cmdInfo(sf, "cpu", false, nil, 2, 10, 20, 0)
+		cmdInfo(sf, infoOpts{eventType: "cpu", expand: 2, topThreads: 10, topMethods: 20})
 	})
 
 	// Drill-down should appear but without lines section
@@ -621,6 +621,660 @@ func TestCmdInfoExpandNoLineInfo(t *testing.T) {
 	}
 	if strings.Contains(out, "--- lines ---") {
 		t.Error("expected no lines section when no line info")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestThreadGroupName
+// ---------------------------------------------------------------------------
+
+func TestThreadGroupName(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		// --- basic suffix stripping ---
+		{"worker-1", "worker"},
+		{"pool_0", "pool"},
+		{"GC Thread#54", "GC Thread"},
+		{"main", "main"},
+		{"DestroyJavaVM", "DestroyJavaVM"},
+
+		// --- multi-level: drop all purely-numeric segments ---
+		{"pool-1-thread-2", "pool-thread"},
+		{"pool-2-thread-5", "pool-thread"},
+		{"http-nio-8080-exec-1", "http-nio-exec"},
+		{"http-nio-8443-exec-3", "http-nio-exec"},
+		{"lettuce-nioEventLoop-4-1", "lettuce-nioEventLoop"},
+		{"a_1_2", "a"},
+		{"x-1-2-3-y", "x-y"},
+
+		// --- trailing digit trimming ---
+		{"CompilerThread0", "CompilerThread"},
+		{"CompilerThread1", "CompilerThread"},
+		{"vm0", "vm"},
+		{"ab1", "ab"},
+		{"abc123", "abc"},
+
+		// trailing digit trimming: min-length threshold (remainder < 2 chars)
+		{"G1", "G1"},
+		{"a1", "a1"},
+		{"Z9", "Z9"},
+
+		// trailing digits: char before digit run must be a letter
+		{"Connection(1)", "Connection(1)"},
+		{"abc.123", "abc.123"},
+		{"foo)7", "foo)7"},
+		{"bar]3", "bar]3"},
+
+		// --- real-world JVM thread names ---
+		// Tomcat
+		{"http-nio-8080-Acceptor", "http-nio-Acceptor"},
+		{"http-nio-8080-Poller", "http-nio-Poller"},
+
+		// Netty
+		{"nioEventLoopGroup-2-1", "nioEventLoopGroup"},
+		{"nioEventLoopGroup-2-2", "nioEventLoopGroup"},
+		{"nioEventLoopGroup-3-1", "nioEventLoopGroup"},
+
+		// Reactor
+		{"reactor-http-nio-1", "reactor-http-nio"},
+		{"reactor-http-nio-2", "reactor-http-nio"},
+
+		// HikariCP
+		{"HikariPool-1-housekeeper", "HikariPool-housekeeper"},
+		{"HikariPool-2-housekeeper", "HikariPool-housekeeper"},
+
+		// Quartz
+		{"QuartzScheduler_Worker-1", "QuartzScheduler_Worker"},
+		{"QuartzScheduler_Worker-2", "QuartzScheduler_Worker"},
+
+		// ForkJoinPool
+		{"ForkJoinPool-1-worker-1", "ForkJoinPool-worker"},
+		{"ForkJoinPool-1-worker-2", "ForkJoinPool-worker"},
+		{"ForkJoinPool.commonPool-worker-1", "ForkJoinPool.commonPool-worker"},
+		{"ForkJoinPool.commonPool-worker-3", "ForkJoinPool.commonPool-worker"},
+
+		// Vert.x (dot inside segment)
+		{"vert.x-eventloop-thread-0", "vert.x-eventloop-thread"},
+		{"vert.x-eventloop-thread-1", "vert.x-eventloop-thread"},
+		{"vert.x-worker-thread-0", "vert.x-worker-thread"},
+
+		// G1 GC threads
+		{"G1 Main Marker", "G1 Main Marker"},
+		{"G1 Conc#0", "G1 Conc"},
+		{"G1 Conc#1", "G1 Conc"},
+		{"G1 Refine#0", "G1 Refine"},
+		{"G1 Refine#12", "G1 Refine"},
+		{"G1 Young Gen", "G1 Young Gen"},
+
+		// RMI — parens prevent digit trimming, IP not all-digits
+		{"RMI TCP Connection(1)-127.0.0.1", "RMI TCP Connection(1)-127.0.0.1"},
+		{"RMI TCP Connection(2)-127.0.0.1", "RMI TCP Connection(2)-127.0.0.1"},
+
+		// C2 compiler
+		{"C2 CompilerThread0", "C2 CompilerThread"},
+		{"C2 CompilerThread1", "C2 CompilerThread"},
+
+		// --- spaces are not separators ---
+		{"G1 Young Gen", "G1 Young Gen"},
+		{"VM Thread", "VM Thread"},
+		{"Signal Dispatcher", "Signal Dispatcher"},
+
+		// --- separator edge cases ---
+		// trailing separator: empty segment dropped
+		{"thread-", "thread"},
+		{"abc_", "abc"},
+		{"x#", "x"},
+
+		// leading separator: empty segment dropped
+		{"-abc-1", "abc"},
+		{"_foo_2", "foo"},
+		{"#bar", "bar"},
+
+		// consecutive separators
+		{"a--b", "a-b"},
+		{"a---b", "a-b"},
+		{"a-_b", "a_b"},
+		{"a-_#b", "a#b"},
+
+		// only separators
+		{"-", "-"},
+		{"#", "#"},
+		{"_", "_"},
+		{"--", "--"},
+		{"-_#", "-_#"},
+
+		// --- all-numeric inputs (fallback to original) ---
+		{"123", "123"},
+		{"42", "42"},
+		{"0", "0"},
+		{"123-456", "123-456"},
+		{"1-2-3", "1-2-3"},
+		{"#42", "#42"},
+		{"_99_", "_99_"},
+
+		// --- mixed separator types ---
+		{"shared-network_118", "shared-network"},
+		{"a-1_b-2#c-3", "a_b#c"},
+		{"x_y-z", "x_y-z"},
+
+		// --- empty / minimal ---
+		{"", ""},
+		{"a", "a"},
+		{"1", "1"},
+
+		// --- version-like suffixes: threshold protects short remainders ---
+		{"test-v2", "test-v2"}, // "v2": remainder "v" is 1 char → keep
+		{"log4j2", "log4j"},    // "log4j2": trailing "2", remainder "log4j" >= 2 → trim
+
+		// --- names that must NOT merge with each other ---
+		// (tested via groupThreads below, but also verify here)
+		{"io-read-1", "io-read"},
+		{"io-write-1", "io-write"},
+		{"kafka-coordinator", "kafka-coordinator"},
+		{"kafka-producer", "kafka-producer"},
+		{"pool-1-read", "pool-read"},
+		{"pool-1-write", "pool-write"},
+	}
+	for _, tt := range tests {
+		got := threadGroupName(tt.input)
+		if got != tt.want {
+			t.Errorf("threadGroupName(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+// TestThreadGroupNameMerges verifies that specific thread names produce the
+// same group name (i.e. would be merged by groupThreads).
+func TestThreadGroupNameMerges(t *testing.T) {
+	shouldMerge := [][]string{
+		{"worker-1", "worker-2", "worker-99"},
+		{"pool-1-thread-2", "pool-2-thread-5", "pool-1-thread-9"},
+		{"http-nio-8080-exec-1", "http-nio-8443-exec-3"},
+		{"nioEventLoopGroup-2-1", "nioEventLoopGroup-3-4"},
+		{"HikariPool-1-housekeeper", "HikariPool-2-housekeeper"},
+		{"CompilerThread0", "CompilerThread1"},
+		{"G1 Conc#0", "G1 Conc#1", "G1 Conc#12"},
+		{"ForkJoinPool-1-worker-1", "ForkJoinPool-2-worker-3"},
+		{"reactor-http-nio-1", "reactor-http-nio-2", "reactor-http-nio-10"},
+		{"QuartzScheduler_Worker-1", "QuartzScheduler_Worker-2"},
+		{"gc#0", "gc#1", "gc#2"},
+		{"lettuce-nioEventLoop-4-1", "lettuce-nioEventLoop-5-2"},
+		{"vert.x-eventloop-thread-0", "vert.x-eventloop-thread-1"},
+	}
+	for _, group := range shouldMerge {
+		names := make(map[string]bool)
+		for _, name := range group {
+			names[threadGroupName(name)] = true
+		}
+		if len(names) != 1 {
+			t.Errorf("expected all to merge: %v, got groups: %v", group, names)
+		}
+	}
+}
+
+// TestThreadGroupNameNoMerge verifies that specific thread names produce
+// different group names (i.e. must NOT be merged).
+func TestThreadGroupNameNoMerge(t *testing.T) {
+	shouldNotMerge := [][]string{
+		{"io-read-1", "io-write-1"},
+		{"pool-1-read", "pool-1-write"},
+		{"kafka-coordinator", "kafka-producer"},
+		{"http-nio-8080-Acceptor", "http-nio-8080-Poller"},
+		{"vert.x-eventloop-thread-0", "vert.x-worker-thread-0"},
+		{"ForkJoinPool.commonPool-worker-1", "ForkJoinPool-1-worker-1"},
+		{"G1 Conc#0", "G1 Refine#0"},
+		{"main", "Main Thread"},
+		{"HikariPool-1-housekeeper", "HikariPool-1-connection-adder"},
+	}
+	for _, pair := range shouldNotMerge {
+		a := threadGroupName(pair[0])
+		b := threadGroupName(pair[1])
+		if a == b {
+			t.Errorf("should NOT merge but both map to %q: %v", a, pair)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestGroupThreads
+// ---------------------------------------------------------------------------
+
+func TestGroupThreads(t *testing.T) {
+	entries := []threadEntry{
+		{"net-1", 100},
+		{"net-2", 50},
+		{"gc#0", 30},
+		{"gc#1", 20},
+		{"main", 10},
+	}
+	groups := groupThreads(entries)
+	if len(groups) != 3 {
+		t.Fatalf("expected 3 groups, got %d", len(groups))
+	}
+	// Sorted by samples descending: net(150), gc(50), main(10)
+	if groups[0].name != "net" || groups[0].samples != 150 || groups[0].threads != 2 {
+		t.Errorf("group[0] = %+v, want net/150/2", groups[0])
+	}
+	if groups[1].name != "gc" || groups[1].samples != 50 || groups[1].threads != 2 {
+		t.Errorf("group[1] = %+v, want gc/50/2", groups[1])
+	}
+	if groups[2].name != "main" || groups[2].samples != 10 || groups[2].threads != 1 {
+		t.Errorf("group[2] = %+v, want main/10/1", groups[2])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestGroupThreadsMultiLevel
+// ---------------------------------------------------------------------------
+
+func TestGroupThreadsMultiLevel(t *testing.T) {
+	entries := []threadEntry{
+		{"pool-1-thread-2", 40},
+		{"pool-2-thread-5", 30},
+		{"pool-1-thread-9", 20},
+		{"main", 10},
+	}
+	groups := groupThreads(entries)
+	// pool-1-thread-2, pool-2-thread-5, pool-1-thread-9 all map to "pool-thread"
+	if len(groups) != 2 {
+		t.Fatalf("expected 2 groups, got %d: %+v", len(groups), groups)
+	}
+	if groups[0].name != "pool-thread" || groups[0].samples != 90 || groups[0].threads != 3 {
+		t.Errorf("group[0] = %+v, want pool-thread/90/3", groups[0])
+	}
+	if groups[1].name != "main" || groups[1].samples != 10 || groups[1].threads != 1 {
+		t.Errorf("group[1] = %+v, want main/10/1", groups[1])
+	}
+}
+
+// TestGroupThreadsRealisticMix simulates a realistic JVM application with
+// multiple thread pools and singleton threads.
+func TestGroupThreadsRealisticMix(t *testing.T) {
+	entries := []threadEntry{
+		// Tomcat HTTP pool — different ports merge
+		{"http-nio-8080-exec-1", 50},
+		{"http-nio-8080-exec-2", 40},
+		{"http-nio-8443-exec-1", 30},
+		// HikariCP — different pool IDs merge
+		{"HikariPool-1-housekeeper", 20},
+		{"HikariPool-2-housekeeper", 10},
+		// G1 GC
+		{"G1 Conc#0", 15},
+		{"G1 Conc#1", 12},
+		// Singletons
+		{"main", 8},
+		{"DestroyJavaVM", 3},
+		// Compiler
+		{"CompilerThread0", 5},
+		{"CompilerThread1", 4},
+	}
+	groups := groupThreads(entries)
+
+	// Build a map for easier assertion.
+	gm := make(map[string]threadGroupEntry)
+	for _, g := range groups {
+		gm[g.name] = g
+	}
+
+	// Tomcat threads should all merge (port 8080 and 8443).
+	if g, ok := gm["http-nio-exec"]; !ok {
+		t.Errorf("expected group 'http-nio-exec', got groups: %+v", gm)
+	} else {
+		if g.threads != 3 || g.samples != 120 {
+			t.Errorf("http-nio-exec: want 3 threads / 120 samples, got %+v", g)
+		}
+	}
+
+	// HikariCP housekeepers merge across pool IDs.
+	if g, ok := gm["HikariPool-housekeeper"]; !ok {
+		t.Errorf("expected group 'HikariPool-housekeeper', got groups: %+v", gm)
+	} else {
+		if g.threads != 2 || g.samples != 30 {
+			t.Errorf("HikariPool-housekeeper: want 2/30, got %+v", g)
+		}
+	}
+
+	// G1 Conc threads merge.
+	if g, ok := gm["G1 Conc"]; !ok {
+		t.Errorf("expected group 'G1 Conc', got groups: %+v", gm)
+	} else if g.threads != 2 || g.samples != 27 {
+		t.Errorf("G1 Conc: want 2/27, got %+v", g)
+	}
+
+	// CompilerThread merges.
+	if g, ok := gm["CompilerThread"]; !ok {
+		t.Errorf("expected group 'CompilerThread', got groups: %+v", gm)
+	} else if g.threads != 2 || g.samples != 9 {
+		t.Errorf("CompilerThread: want 2/9, got %+v", g)
+	}
+
+	// Singletons stay separate.
+	if _, ok := gm["main"]; !ok {
+		t.Error("expected singleton group 'main'")
+	}
+	if _, ok := gm["DestroyJavaVM"]; !ok {
+		t.Error("expected singleton group 'DestroyJavaVM'")
+	}
+
+	// Total: 6 groups.
+	if len(groups) != 6 {
+		t.Errorf("expected 6 groups, got %d: %+v", len(groups), gm)
+	}
+}
+
+// TestGroupThreadsNoFalseMerge verifies that threads from different logical
+// pools do not merge even though they share numeric-segment structure.
+func TestGroupThreadsNoFalseMerge(t *testing.T) {
+	entries := []threadEntry{
+		{"io-read-1", 50},
+		{"io-read-2", 40},
+		{"io-write-1", 30},
+		{"io-write-2", 20},
+		{"vert.x-eventloop-thread-0", 10},
+		{"vert.x-worker-thread-0", 10},
+	}
+	groups := groupThreads(entries)
+	gm := make(map[string]threadGroupEntry)
+	for _, g := range groups {
+		gm[g.name] = g
+	}
+
+	if gm["io-read"].threads != 2 || gm["io-read"].samples != 90 {
+		t.Errorf("io-read: want 2/90, got %+v", gm["io-read"])
+	}
+	if gm["io-write"].threads != 2 || gm["io-write"].samples != 50 {
+		t.Errorf("io-write: want 2/50, got %+v", gm["io-write"])
+	}
+	// Singletons keep their original name (no grouping without evidence).
+	if gm["vert.x-eventloop-thread-0"].threads != 1 {
+		t.Errorf("vert.x-eventloop-thread-0: want 1 thread, got %+v", gm["vert.x-eventloop-thread-0"])
+	}
+	if gm["vert.x-worker-thread-0"].threads != 1 {
+		t.Errorf("vert.x-worker-thread-0: want 1 thread, got %+v", gm["vert.x-worker-thread-0"])
+	}
+	if len(groups) != 4 {
+		t.Errorf("expected 4 groups, got %d: %+v", len(groups), gm)
+	}
+}
+
+// TestGroupThreadsSingletonFallback verifies that threads with no grouping
+// partner keep their original name instead of being normalised.
+func TestGroupThreadsSingletonFallback(t *testing.T) {
+	entries := []threadEntry{
+		// Two CompilerThreads → merge (2 members share normalised form).
+		{"CompilerThread0", 40},
+		{"CompilerThread1", 30},
+		// One G1 Young Gen → singleton, keep original.
+		{"G1 Young Gen", 20},
+		// One log4j2-TF-1-Acceptor → singleton, keep original (preserves "2" and "1").
+		{"log4j2-TF-1-Acceptor", 10},
+		// One main → singleton, keep original.
+		{"main", 5},
+	}
+	groups := groupThreads(entries)
+	gm := make(map[string]threadGroupEntry)
+	for _, g := range groups {
+		gm[g.name] = g
+	}
+
+	if g := gm["CompilerThread"]; g.threads != 2 || g.samples != 70 {
+		t.Errorf("CompilerThread: want 2/70, got %+v", g)
+	}
+	if _, ok := gm["G1 Young Gen"]; !ok {
+		t.Errorf("expected singleton 'G1 Young Gen', got groups: %+v", gm)
+	}
+	if _, ok := gm["log4j2-TF-1-Acceptor"]; !ok {
+		t.Errorf("expected singleton 'log4j2-TF-1-Acceptor', got groups: %+v", gm)
+	}
+	if _, ok := gm["main"]; !ok {
+		t.Errorf("expected singleton 'main', got groups: %+v", gm)
+	}
+	if len(groups) != 4 {
+		t.Errorf("expected 4 groups, got %d: %+v", len(groups), gm)
+	}
+}
+
+// TestGroupThreadsSingletonBecomesGroupWithPeer verifies that a thread that
+// would be a singleton on its own merges once a peer appears.
+func TestGroupThreadsSingletonBecomesGroupWithPeer(t *testing.T) {
+	// With only one worker, it stays as-is.
+	solo := []threadEntry{{"worker-1", 100}}
+	g1 := groupThreads(solo)
+	if g1[0].name != "worker-1" {
+		t.Errorf("solo: expected 'worker-1', got %q", g1[0].name)
+	}
+
+	// Add a second worker — now they merge.
+	pair := []threadEntry{{"worker-1", 100}, {"worker-2", 50}}
+	g2 := groupThreads(pair)
+	if len(g2) != 1 || g2[0].name != "worker" {
+		t.Errorf("pair: expected single group 'worker', got %+v", g2)
+	}
+}
+
+// TestAssignGroupsOriginalMatchesNormalized covers the case where one
+// thread's original name equals another thread's normalised form.
+// e.g. "worker" (already normalised) + "worker-1" → both map to "worker".
+func TestAssignGroupsOriginalMatchesNormalized(t *testing.T) {
+	entries := []threadEntry{
+		{"worker", 80},
+		{"worker-1", 50},
+	}
+	a := assignGroups(entries)
+	if a["worker"] != "worker" {
+		t.Errorf("worker: expected 'worker', got %q", a["worker"])
+	}
+	if a["worker-1"] != "worker" {
+		t.Errorf("worker-1: expected 'worker', got %q", a["worker-1"])
+	}
+}
+
+// TestCrossEventCombinedAssignment verifies that printCrossEventSummary
+// uses combined thread lists for grouping: a thread pool appearing in only
+// one event type still merges if the other side has a peer.
+func TestCrossEventCombinedAssignment(t *testing.T) {
+	// CPU has only worker-1; WALL has worker-1 + worker-2.
+	// Without combined assignment, CPU side would be singleton "worker-1".
+	// With combined assignment, both sides use "worker" because the
+	// combined set has 2 distinct names mapping to "worker".
+	cpuSF := makeStackFile([]stack{
+		{frames: []string{"A.a"}, lines: []uint32{0}, count: 100, thread: "worker-1"},
+	})
+	wallSF := makeStackFile([]stack{
+		{frames: []string{"A.a"}, lines: []uint32{0}, count: 50, thread: "worker-1"},
+		{frames: []string{"A.a"}, lines: []uint32{0}, count: 50, thread: "worker-2"},
+	})
+	stacksByEvent := map[string]*stackFile{
+		"cpu":  cpuSF,
+		"wall": wallSF,
+	}
+
+	out := captureOutput(func() {
+		cmdInfo(cpuSF, infoOpts{
+			eventType:     "cpu",
+			isJFR:         true,
+			eventCounts:   map[string]int{"cpu": 100, "wall": 100},
+			topThreads:    10,
+			topMethods:    10,
+			stacksByEvent: stacksByEvent,
+		})
+	})
+
+	// The cross-event summary should show a "worker" group, not "worker-1".
+	if !strings.Contains(out, "=== CPU vs WALL ===") {
+		t.Fatalf("expected cross-event summary, got:\n%s", out)
+	}
+	// "worker (2)" indicates merged group with 2 threads.
+	if !strings.Contains(out, "worker (2)") {
+		t.Errorf("expected 'worker (2)' in cross-event summary, got:\n%s", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestCmdInfoCrossEventSkippedWithZeroSamples
+// ---------------------------------------------------------------------------
+
+func TestCmdInfoCrossEventSkippedWithZeroSamples(t *testing.T) {
+	cpuSF := makeStackFile([]stack{
+		{frames: []string{"A.a"}, lines: []uint32{0}, count: 10, thread: "main"},
+	})
+	wallSF := &stackFile{totalSamples: 0}
+	stacksByEvent := map[string]*stackFile{
+		"cpu":  cpuSF,
+		"wall": wallSF,
+	}
+
+	out := captureOutput(func() {
+		cmdInfo(cpuSF, infoOpts{eventType: "cpu", isJFR: true, eventCounts: map[string]int{"cpu": 10, "wall": 0}, topThreads: 5, topMethods: 10, stacksByEvent: stacksByEvent})
+	})
+
+	if strings.Contains(out, "=== CPU vs WALL ===") {
+		t.Error("expected no cross-event summary when wall has zero samples")
+	}
+}
+
+// TestCmdInfoCrossEventIdleFiltered verifies that when stacksByEvent
+// entries have been idle-filtered, the cross-event summary reflects the
+// filtered data (not original unfiltered counts).
+func TestCmdInfoCrossEventIdleFiltered(t *testing.T) {
+	// CPU: 80 active on worker-1, 20 idle (Object.wait) on io-1.
+	// WALL: 30 active on worker-1, 70 idle (Object.wait) on io-1.
+	cpuSF := makeStackFile([]stack{
+		{frames: []string{"A.a"}, lines: []uint32{0}, count: 80, thread: "worker-1"},
+		{frames: []string{"java/lang/Object.wait"}, lines: []uint32{0}, count: 20, thread: "io-1"},
+	})
+	wallSF := makeStackFile([]stack{
+		{frames: []string{"A.a"}, lines: []uint32{0}, count: 30, thread: "worker-1"},
+		{frames: []string{"java/lang/Object.wait"}, lines: []uint32{0}, count: 70, thread: "io-1"},
+	})
+
+	// Simulate --no-idle: filter both sides before passing to cmdInfo.
+	filteredStacksByEvent := map[string]*stackFile{
+		"cpu":  cpuSF.filterIdle(),
+		"wall": wallSF.filterIdle(),
+	}
+
+	filteredCpuSF := cpuSF.filterIdle()
+	out := captureOutput(func() {
+		cmdInfo(filteredCpuSF, infoOpts{
+			eventType:     "cpu",
+			isJFR:         true,
+			eventCounts:   map[string]int{"cpu": 100, "wall": 100},
+			topThreads:    10,
+			topMethods:    10,
+			stacksByEvent: filteredStacksByEvent,
+		})
+	})
+
+	// After idle filtering, only worker-1 remains (io-1 was idle).
+	// Cross-event summary should NOT show io — its samples were all idle.
+	if strings.Contains(out, "=== CPU vs WALL ===") {
+		// With only one thread remaining, cross-event might still show if
+		// both sides have data. Check that io is absent.
+		if strings.Contains(out, "io") {
+			t.Errorf("expected no 'io' in cross-event summary after idle filter, got:\n%s", out)
+		}
+	}
+
+	// The worker should show 100% on CPU side (80/80 = 100%).
+	if !strings.Contains(out, "100.0%") {
+		t.Errorf("expected worker-1 at 100.0%% CPU after idle filter, got:\n%s", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestCmdInfoCrossEvent
+// ---------------------------------------------------------------------------
+
+func TestCmdInfoCrossEvent(t *testing.T) {
+	cpuSF := makeStackFile([]stack{
+		{frames: []string{"A.a"}, lines: []uint32{0}, count: 80, thread: "worker-1"},
+		{frames: []string{"A.a"}, lines: []uint32{0}, count: 20, thread: "io-1"},
+	})
+	wallSF := makeStackFile([]stack{
+		{frames: []string{"A.a"}, lines: []uint32{0}, count: 30, thread: "worker-1"},
+		{frames: []string{"A.a"}, lines: []uint32{0}, count: 70, thread: "io-1"},
+	})
+	stacksByEvent := map[string]*stackFile{
+		"cpu":  cpuSF,
+		"wall": wallSF,
+	}
+
+	out := captureOutput(func() {
+		cmdInfo(cpuSF, infoOpts{eventType: "cpu", isJFR: true, eventCounts: map[string]int{"cpu": 100, "wall": 100}, topThreads: 10, topMethods: 10, stacksByEvent: stacksByEvent})
+	})
+
+	if !strings.Contains(out, "=== CPU vs WALL ===") {
+		t.Errorf("expected cross-event summary header, got:\n%s", out)
+	}
+	if !strings.Contains(out, "worker") {
+		t.Errorf("expected 'worker' group in cross-event summary, got:\n%s", out)
+	}
+	if !strings.Contains(out, "io") {
+		t.Errorf("expected 'io' group in cross-event summary, got:\n%s", out)
+	}
+	// worker: CPU=80%, WALL=30%
+	if !strings.Contains(out, "80.0%") {
+		t.Errorf("expected '80.0%%' for worker CPU, got:\n%s", out)
+	}
+}
+
+func TestCmdInfoCrossEventWallOnlyGroup(t *testing.T) {
+	cpuSF := makeStackFile([]stack{
+		{frames: []string{"A.a"}, lines: []uint32{0}, count: 100, thread: "worker-1"},
+	})
+	wallSF := makeStackFile([]stack{
+		{frames: []string{"A.a"}, lines: []uint32{0}, count: 30, thread: "worker-1"},
+		{frames: []string{"A.a"}, lines: []uint32{0}, count: 70, thread: "io-1"},
+	})
+	stacksByEvent := map[string]*stackFile{
+		"cpu":  cpuSF,
+		"wall": wallSF,
+	}
+
+	out := captureOutput(func() {
+		cmdInfo(cpuSF, infoOpts{eventType: "cpu", isJFR: true, eventCounts: map[string]int{"cpu": 100, "wall": 100}, topThreads: 10, topMethods: 10, stacksByEvent: stacksByEvent})
+	})
+
+	// "io" group exists only in wall, should still appear with 0.0% CPU
+	if !strings.Contains(out, "io") {
+		t.Errorf("expected wall-only 'io' group in cross-event summary, got:\n%s", out)
+	}
+	if !strings.Contains(out, "0.0%") {
+		t.Errorf("expected '0.0%%' CPU for wall-only group, got:\n%s", out)
+	}
+}
+
+func TestCmdInfoCrossEventSkippedWithNil(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a"}, lines: []uint32{0}, count: 10, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdInfo(sf, infoOpts{eventType: "cpu", isJFR: true, eventCounts: map[string]int{"cpu": 10}, topThreads: 5, topMethods: 10})
+	})
+
+	if strings.Contains(out, "=== CPU vs WALL ===") {
+		t.Error("expected no cross-event summary when stacksByEvent is nil")
+	}
+}
+
+func TestCmdInfoCrossEventSkippedWithOnlyOneSide(t *testing.T) {
+	cpuSF := makeStackFile([]stack{
+		{frames: []string{"A.a"}, lines: []uint32{0}, count: 10, thread: "main"},
+	})
+	stacksByEvent := map[string]*stackFile{
+		"cpu": cpuSF,
+	}
+
+	out := captureOutput(func() {
+		cmdInfo(cpuSF, infoOpts{eventType: "cpu", isJFR: true, eventCounts: map[string]int{"cpu": 10}, topThreads: 5, topMethods: 10, stacksByEvent: stacksByEvent})
+	})
+
+	if strings.Contains(out, "=== CPU vs WALL ===") {
+		t.Error("expected no cross-event summary when only cpu present")
 	}
 }
 
@@ -2473,7 +3127,7 @@ func TestCmdInfoNoThreads(t *testing.T) {
 	})
 
 	out := captureOutput(func() {
-		cmdInfo(sf, "cpu", false, nil, 0, 10, 20, 0)
+		cmdInfo(sf, infoOpts{eventType: "cpu", topThreads: 10, topMethods: 20})
 	})
 
 	// Should NOT have THREADS section since no thread info
@@ -2826,7 +3480,7 @@ func TestJFRInfoAutoSelectWall(t *testing.T) {
 	}
 
 	out := captureOutput(func() {
-		cmdInfo(sf, eventType, true, eventCounts, 0, 10, 20, 0)
+		cmdInfo(sf, infoOpts{eventType: eventType, isJFR: true, eventCounts: eventCounts, topThreads: 10, topMethods: 20})
 	})
 	if !strings.Contains(out, "Event: wall") {
 		t.Errorf("expected 'Event: wall' in output, got:\n%s", out)
@@ -2852,7 +3506,7 @@ func TestJFRInfoAlsoAvailable(t *testing.T) {
 	eventCounts := parsed.eventCounts
 
 	out := captureOutput(func() {
-		cmdInfo(sf, "cpu", true, eventCounts, 0, 10, 20, 0)
+		cmdInfo(sf, infoOpts{eventType: "cpu", isJFR: true, eventCounts: eventCounts, topThreads: 10, topMethods: 20})
 	})
 	if !strings.Contains(out, "Also available:") {
 		t.Errorf("expected 'Also available:' in output, got:\n%s", out)
@@ -4746,7 +5400,7 @@ func TestCmdTimeline(t *testing.T) {
 		t.Fatalf("parseJFRData: %v", err)
 	}
 	out := captureOutput(func() {
-		cmdTimeline(parsed, "cpu", 5, "", "", false, false, "", -1, -1)
+		cmdTimeline(parsed, "cpu", 5, "", "", false, false, nil, "", -1, -1)
 	})
 	if !strings.Contains(out, "Duration:") {
 		t.Error("expected Duration in header")
@@ -4784,7 +5438,7 @@ func TestCmdTimelineMethod(t *testing.T) {
 		t.Fatalf("parseJFRData: %v", err)
 	}
 	out := captureOutput(func() {
-		cmdTimeline(parsed, "cpu", 5, "", "Workload", false, false, "", -1, -1)
+		cmdTimeline(parsed, "cpu", 5, "", "Workload", false, false, nil, "", -1, -1)
 	})
 	if !strings.Contains(out, "Matched:") {
 		t.Errorf("expected 'Matched:' in header with --method, got %q", out)
@@ -4801,10 +5455,10 @@ func TestCmdTimelineTopMethod(t *testing.T) {
 		t.Fatalf("parseJFRData: %v", err)
 	}
 	out := captureOutput(func() {
-		cmdTimeline(parsed, "cpu", 5, "", "", true, false, "", -1, -1)
+		cmdTimeline(parsed, "cpu", 5, "", "", true, false, nil, "", -1, -1)
 	})
-	if !strings.Contains(out, "Top Method") {
-		t.Error("expected 'Top Method' column header")
+	if !strings.Contains(out, "Hot Method (self)") {
+		t.Error("expected 'Hot Method (self)' column header")
 	}
 	// Each non-zero bucket should have a method name with percentage.
 	lines := strings.Split(strings.TrimSpace(out), "\n")
@@ -4830,12 +5484,42 @@ func TestCmdTimelineTopMethodAggregatesLeafSelfCounts(t *testing.T) {
 		spanNanos: 1_000_000_000,
 	}
 	out := captureOutput(func() {
-		cmdTimeline(parsed, "cpu", 1, "", "", true, false, "", -1, -1)
+		cmdTimeline(parsed, "cpu", 1, "", "", true, false, nil, "", -1, -1)
 	})
 
 	// X=6, Y=8, total=14 => Y is top at 57%.
 	if !strings.Contains(out, "Y (57%)") {
 		t.Fatalf("expected top method Y with 57%% share, got %q", out)
+	}
+}
+
+func TestCmdTimelineHide(t *testing.T) {
+	// Stack "A;B;X" with weight 10, "A;B;Y" with weight 5.
+	// Hiding X removes X from the first stack, making B the leaf.
+	// B appears as leaf in 10 samples (from hidden X stack).
+	// Y appears as leaf in 5 samples.
+	// So B should be the hot method, not X.
+	parsed := &parsedJFR{
+		timedEvents: map[string][]timedEvent{
+			"cpu": {
+				{offsetNanos: 0, stackKey: "A;B;X", frames: []string{"A", "B", "X"}, lines: []uint32{0, 0, 0}, weight: 10},
+				{offsetNanos: 0, stackKey: "A;B;Y", frames: []string{"A", "B", "Y"}, lines: []uint32{0, 0, 0}, weight: 5},
+			},
+		},
+		spanNanos: 1_000_000_000,
+	}
+	hide := regexp.MustCompile("^X$")
+	out := captureOutput(func() {
+		cmdTimeline(parsed, "cpu", 1, "", "", true, false, hide, "", -1, -1)
+	})
+
+	// X must not appear as hot method.
+	if strings.Contains(out, "X (") {
+		t.Errorf("expected hidden method X to not appear as hot method, got:\n%s", out)
+	}
+	// B is now the leaf of the formerly X-topped stack.
+	if !strings.Contains(out, "B (") {
+		t.Errorf("expected B as hot method after hiding X, got:\n%s", out)
 	}
 }
 
@@ -4848,7 +5532,7 @@ func TestCmdTimelineZeroSpan(t *testing.T) {
 		spanNanos: 0,
 	}
 	out := captureOutput(func() {
-		cmdTimeline(parsed, "cpu", 0, "", "", false, false, "", -1, -1)
+		cmdTimeline(parsed, "cpu", 0, "", "", false, false, nil, "", -1, -1)
 	})
 	if !strings.Contains(out, "Buckets: 1") {
 		t.Errorf("expected 1 bucket for zero-span, got %q", out)
@@ -4881,7 +5565,7 @@ func TestCmdTimelineResolution(t *testing.T) {
 		t.Fatalf("parseJFRData: %v", err)
 	}
 	out := captureOutput(func() {
-		cmdTimeline(parsed, "cpu", 0, "1s", "", false, false, "", -1, -1)
+		cmdTimeline(parsed, "cpu", 0, "1s", "", false, false, nil, "", -1, -1)
 	})
 	if !strings.Contains(out, "1.0s each") {
 		t.Errorf("expected '1.0s each' in header, got %q", out)
@@ -4898,7 +5582,7 @@ func TestCmdTimelineFromTo(t *testing.T) {
 		t.Fatalf("parseJFRData: %v", err)
 	}
 	out := captureOutput(func() {
-		cmdTimeline(parsed, "cpu", 5, "", "", false, false, "",
+		cmdTimeline(parsed, "cpu", 5, "", "", false, false, nil, "",
 			1_000_000_000, 3_000_000_000)
 	})
 	// Duration header should show the window span (2s), not full recording.
@@ -4924,7 +5608,7 @@ func TestCmdTimelineFromOnly(t *testing.T) {
 		t.Fatalf("parseJFRData: %v", err)
 	}
 	out := captureOutput(func() {
-		cmdTimeline(parsed, "cpu", 5, "", "", false, false, "",
+		cmdTimeline(parsed, "cpu", 5, "", "", false, false, nil, "",
 			1_000_000_000, -1)
 	})
 	// Bucket origin should start at 1s.
@@ -5161,7 +5845,7 @@ func TestTimelineFromBeyondSpanClampsToZero(t *testing.T) {
 		spanNanos: 5_000_000_000,
 	}
 	out := captureOutput(func() {
-		cmdTimeline(parsed, "cpu", 0, "", "", false, false, "",
+		cmdTimeline(parsed, "cpu", 0, "", "", false, false, nil, "",
 			100_000_000_000, -1)
 	})
 	// Should produce a single bucket (zero span), not negative span confusion.
@@ -5190,7 +5874,7 @@ func TestTimelineFromToBothBeyondSpan(t *testing.T) {
 		toNanos = parsed.spanNanos
 	}
 	out := captureOutput(func() {
-		cmdTimeline(parsed, "cpu", 0, "", "", false, false, "",
+		cmdTimeline(parsed, "cpu", 0, "", "", false, false, nil, "",
 			fromNanos, toNanos)
 	})
 	if !strings.Contains(out, "Buckets: 1") {
@@ -5215,7 +5899,7 @@ func TestCmdTimelineSubSecondResolutionLabels(t *testing.T) {
 	}
 
 	out := captureOutput(func() {
-		cmdTimeline(parsed, "cpu", 0, "1ms", "", false, false, "",
+		cmdTimeline(parsed, "cpu", 0, "1ms", "", false, false, nil, "",
 			284_000_000_000, 284_003_000_000)
 	})
 
