@@ -41,6 +41,7 @@ Use `{{ASPROF_PATH}}` to record profiles. Common invocations:
 9. **CI gate**: `{{AP_QUERY_PATH}} hot profile.jfr --assert-below 15.0` — exits 1 if top method >= threshold.
 10. **Export**: `{{AP_QUERY_PATH}} collapse profile.jfr` — emit collapsed-stack text for external tools.
 11. **Filter**: `{{AP_QUERY_PATH}} filter profile.jfr -m HashMap.resize` — output only stacks passing through a method.
+12. **Script**: `{{AP_QUERY_PATH}} script -c 'CODE'` or `{{AP_QUERY_PATH}} script file.star` — Starlark scripting for custom analysis.
 
 ## Event types (`--event`)
 
@@ -87,3 +88,10 @@ Use `--fqn` to show fully-qualified class names (e.g. `java.util.HashMap.resize`
 - **Self% ≈ Total%** → leaf method, bottleneck is the method itself.
 - **Total% >> Self%** → entry point, drill into `tree` to find real cost.
 - Always start with `info`. Quote specific numbers. Mention thread if `-t` was used.
+
+## Starlark scripting (`script`)
+
+For analysis that fixed commands cannot express: cross-event correlation, custom grouping,
+compound predicates, multi-file comparison, CI budget enforcement.
+
+Run `{{AP_QUERY_PATH}} script --help` for the full scripting API reference (types, functions, examples).

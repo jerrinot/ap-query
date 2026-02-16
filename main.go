@@ -7,7 +7,7 @@
 // Input: .jfr/.jfr.gz files are parsed as JFR binary; all other files and
 // stdin (-) are parsed as collapsed text.
 //
-// Commands: hot, tree, trace, callers, threads, filter, events, collapse, diff, lines, info, timeline
+// Commands: hot, tree, trace, callers, threads, filter, events, collapse, diff, lines, info, timeline, script
 package main
 
 import (
@@ -59,6 +59,7 @@ Commands:
   collapse  Emit collapsed-stack text (useful for piping JFR output).
   filter    Output stacks passing through a method (-m required).
   events    List event types in a JFR file (JFR only).
+  script    Starlark scripting for custom analysis. Run 'script --help' for API reference.
   version   Print version and check for updates.
   update    Download and install the latest release.
   init      Install agent skill for JFR profiling analysis.
@@ -356,6 +357,11 @@ func main() {
 	f := parseFlags(os.Args[2:])
 	if cmd == "update" {
 		cmdUpdate(f.boolean("force"))
+		return
+	}
+
+	if cmd == "script" {
+		cmdScript(os.Args[2:])
 		return
 	}
 
