@@ -17,8 +17,8 @@ import (
 type starlarkProfile struct {
 	sf           *stackFile
 	parsed       *parsedJFR
-	timedParsed  *parsedJFR     // lazy re-parse with timestamps
-	scopedEvents []timedEvent   // non-nil for split-derived profiles (preserves temporal identity)
+	timedParsed  *parsedJFR   // lazy re-parse with timestamps
+	scopedEvents []timedEvent // non-nil for split-derived profiles (preserves temporal identity)
 	event        string
 	events       []string
 	path         string
@@ -95,12 +95,18 @@ func (p *starlarkProfile) Attr(name string) (starlark.Value, error) {
 		return starlark.NewBuiltin("timeline", p.methodTimeline), nil
 	case "split":
 		return starlark.NewBuiltin("split", p.methodSplit), nil
+	case "tree":
+		return starlark.NewBuiltin("tree", p.methodTree), nil
+	case "trace":
+		return starlark.NewBuiltin("trace", p.methodTrace), nil
+	case "callers":
+		return starlark.NewBuiltin("callers", p.methodCallers), nil
 	}
 	return nil, starlark.NoSuchAttrError(fmt.Sprintf("Profile has no .%s attribute", name))
 }
 
 func (p *starlarkProfile) AttrNames() []string {
-	return []string{"stacks", "samples", "duration", "event", "events", "path", "hot", "threads", "filter", "group_by", "timeline", "split"}
+	return []string{"stacks", "samples", "duration", "event", "events", "path", "hot", "threads", "filter", "group_by", "timeline", "split", "tree", "trace", "callers"}
 }
 
 func (p *starlarkProfile) methodHot(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
@@ -358,6 +364,7 @@ func (p *starlarkProfile) methodTimeline(_ *starlark.Thread, b *starlark.Builtin
 			endSec:   float64(endNanos) / 1e9,
 			samples:  samples,
 			events:   bucketEvents[i],
+			parent:   p,
 		}
 	}
 	return starlark.NewList(elems), nil
@@ -423,6 +430,42 @@ func (p *starlarkProfile) methodSplit(_ *starlark.Thread, b *starlark.Builtin, a
 	return starlark.NewList(elems), nil
 }
 
+func (p *starlarkProfile) methodTree(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	var method string
+	depth := 4
+	minPct := 1.0
+	if err := starlark.UnpackArgs(b.Name(), args, kwargs, "method?", &method, "depth?", &depth, "min_pct?", &minPct); err != nil {
+		return nil, err
+	}
+	return starlark.String(computeTreeString(p.sf, method, depth, minPct)), nil
+}
+
+func (p *starlarkProfile) methodTrace(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	var method string
+	minPct := 0.5
+	var fqn bool
+	if err := starlark.UnpackArgs(b.Name(), args, kwargs, "method", &method, "min_pct?", &minPct, "fqn?", &fqn); err != nil {
+		return nil, err
+	}
+	if method == "" {
+		return nil, fmt.Errorf("trace: method must be non-empty")
+	}
+	return starlark.String(computeTraceString(p.sf, method, minPct, fqn)), nil
+}
+
+func (p *starlarkProfile) methodCallers(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	var method string
+	depth := 4
+	minPct := 1.0
+	if err := starlark.UnpackArgs(b.Name(), args, kwargs, "method", &method, "depth?", &depth, "min_pct?", &minPct); err != nil {
+		return nil, err
+	}
+	if method == "" {
+		return nil, fmt.Errorf("callers: method must be non-empty")
+	}
+	return starlark.String(computeCallersString(p.sf, method, depth, minPct)), nil
+}
+
 // ---------------------------------------------------------------------------
 // starlarkBucket
 // ---------------------------------------------------------------------------
@@ -432,7 +475,9 @@ type starlarkBucket struct {
 	endSec   float64
 	samples  int
 	events   []timedEvent
-	stacks   *starlark.List // cached
+	parent   *starlarkProfile // profile that created this bucket
+	stacks   *starlark.List   // cached
+	profile  *starlarkProfile // cached, lazy
 }
 
 func (b *starlarkBucket) String() string {
@@ -447,14 +492,26 @@ func (b *starlarkBucket) buildStacks() *starlark.List {
 	if b.stacks != nil {
 		return b.stacks
 	}
-	sf := buildStackFileFromTimed(b.events)
-	elems := make([]starlark.Value, len(sf.stacks))
-	for i := range sf.stacks {
-		elems[i] = newStarlarkStack(&sf.stacks[i])
+	p := b.buildProfile()
+	elems := make([]starlark.Value, len(p.sf.stacks))
+	for i := range p.sf.stacks {
+		elems[i] = newStarlarkStack(&p.sf.stacks[i])
 	}
 	list := starlark.NewList(elems)
 	b.stacks = list
 	return list
+}
+
+func (b *starlarkBucket) buildProfile() *starlarkProfile {
+	if b.profile != nil {
+		return b.profile
+	}
+	sf := buildStackFileFromTimed(b.events)
+	child := newStarlarkProfile(sf, b.parent.parsed, b.parent.event, b.parent.path)
+	child.timedParsed = b.parent.timedParsed
+	child.scopedEvents = b.events
+	b.profile = child
+	return child
 }
 
 func (b *starlarkBucket) Attr(name string) (starlark.Value, error) {
@@ -469,12 +526,14 @@ func (b *starlarkBucket) Attr(name string) (starlark.Value, error) {
 		return b.buildStacks(), nil
 	case "hot":
 		return starlark.NewBuiltin("hot", b.methodHot), nil
+	case "profile":
+		return b.buildProfile(), nil
 	}
 	return nil, starlark.NoSuchAttrError(fmt.Sprintf("Bucket has no .%s attribute", name))
 }
 
 func (b *starlarkBucket) AttrNames() []string {
-	return []string{"start", "end", "samples", "stacks", "hot"}
+	return []string{"start", "end", "samples", "stacks", "hot", "profile"}
 }
 
 func (b *starlarkBucket) methodHot(_ *starlark.Thread, bn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
@@ -482,14 +541,14 @@ func (b *starlarkBucket) methodHot(_ *starlark.Thread, bn *starlark.Builtin, arg
 	if err := starlark.UnpackArgs(bn.Name(), args, kwargs, "n?", &n); err != nil {
 		return nil, err
 	}
-	sf := buildStackFileFromTimed(b.events)
-	ranked := computeHot(sf, false)
+	p := b.buildProfile()
+	ranked := computeHot(p.sf, false)
 	if n > 0 && n < len(ranked) {
 		ranked = ranked[:n]
 	}
 	elems := make([]starlark.Value, len(ranked))
 	for i, e := range ranked {
-		elems[i] = newStarlarkMethod(e, sf.totalSamples, false)
+		elems[i] = newStarlarkMethod(e, p.sf.totalSamples, false)
 	}
 	return starlark.NewList(elems), nil
 }

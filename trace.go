@@ -2,11 +2,17 @@ package main
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"sort"
 	"strings"
 )
 
 func cmdTrace(sf *stackFile, method string, minPct float64, fqn bool) {
+	writeTrace(os.Stdout, sf, method, minPct, fqn)
+}
+
+func writeTrace(w io.Writer, sf *stackFile, method string, minPct float64, fqn bool) {
 	if sf.totalSamples == 0 {
 		return
 	}
@@ -24,7 +30,7 @@ func cmdTrace(sf *stackFile, method string, minPct float64, fqn bool) {
 	})
 
 	if len(pt.samples) == 0 {
-		fmt.Printf("no frames matching '%s'\n", method)
+		fmt.Fprintf(w, "no frames matching '%s'\n", method)
 		return
 	}
 
@@ -34,7 +40,7 @@ func cmdTrace(sf *stackFile, method string, minPct float64, fqn bool) {
 			names = append(names, n)
 		}
 		sort.Strings(names)
-		fmt.Printf("# matched %d methods: %s\n", len(pt.matchedNames), strings.Join(names, ", "))
+		fmt.Fprintf(w, "# matched %d methods: %s\n", len(pt.matchedNames), strings.Join(names, ", "))
 	}
 
 	// Collect roots sorted by sample count descending, then name for stability.
@@ -58,7 +64,7 @@ func cmdTrace(sf *stackFile, method string, minPct float64, fqn bool) {
 	})
 
 	for _, root := range sortedRoots {
-		traceHottestPath(pt, root.name, minPct)
+		ftraceHottestPath(w, pt, root.name, minPct)
 	}
 }
 
@@ -92,8 +98,8 @@ func childrenAboveMinPct(pt *pathTree, prefix string, minPct float64) []traceChi
 	return children
 }
 
-// traceHottestPath walks from root following the hottest child at each level.
-func traceHottestPath(pt *pathTree, rootKey string, minPct float64) {
+// ftraceHottestPath walks from root following the hottest child at each level.
+func ftraceHottestPath(w io.Writer, pt *pathTree, rootKey string, minPct float64) {
 	prefix := rootKey
 	indent := 0
 	// siblingAnnotation is computed when we pick a child, then printed
@@ -127,12 +133,12 @@ func traceHottestPath(pt *pathTree, rootKey string, minPct float64) {
 			if selfCt > 0 && selfPct >= minPct {
 				line += fmt.Sprintf("  ← self=%.1f%%", selfPct)
 			}
-			fmt.Println(line)
-			fmt.Printf("Hottest leaf: %s (self=%.1f%%)\n", name, selfPct)
+			fmt.Fprintln(w, line)
+			fmt.Fprintf(w, "Hottest leaf: %s (self=%.1f%%)\n", name, selfPct)
 			break
 		}
 
-		fmt.Println(line)
+		fmt.Fprintln(w, line)
 
 		// Pick hottest child, compute sibling annotation for next iteration.
 		hottest := children[0]
@@ -151,4 +157,11 @@ func traceHottestPath(pt *pathTree, rootKey string, minPct float64) {
 		prefix = hottest.key
 		indent++
 	}
+}
+
+// computeTraceString returns the hottest-path trace for the given method as a string.
+func computeTraceString(sf *stackFile, method string, minPct float64, fqn bool) string {
+	var buf strings.Builder
+	writeTrace(&buf, sf, method, minPct, fqn)
+	return strings.TrimRight(buf.String(), "\n")
 }

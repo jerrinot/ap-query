@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 )
@@ -78,11 +79,11 @@ func aggregatePaths(sf *stackFile, method string, extract func(frames []string, 
 	return pt
 }
 
-// printTree prints the aggregated path tree. If showSelf is true,
+// fprintTree prints the aggregated path tree to w. If showSelf is true,
 // leaf nodes annotate their self-time percentage.
-func (pt *pathTree) printTree(method string, maxDepth int, minPct float64, showSelf bool) {
+func (pt *pathTree) fprintTree(w io.Writer, method string, maxDepth int, minPct float64, showSelf bool) {
 	if len(pt.samples) == 0 {
-		fmt.Printf("no frames matching '%s'\n", method)
+		fmt.Fprintf(w, "no frames matching '%s'\n", method)
 		return
 	}
 
@@ -92,7 +93,7 @@ func (pt *pathTree) printTree(method string, maxDepth int, minPct float64, showS
 			names = append(names, n)
 		}
 		sort.Strings(names)
-		fmt.Printf("# matched %d methods: %s\n", len(pt.matchedNames), strings.Join(names, ", "))
+		fmt.Fprintf(w, "# matched %d methods: %s\n", len(pt.matchedNames), strings.Join(names, ", "))
 	}
 
 	roots := make(map[string]bool)
@@ -119,7 +120,7 @@ func (pt *pathTree) printTree(method string, maxDepth int, minPct float64, showS
 				}
 			}
 		}
-		fmt.Printf("%s[%.1f%%] %s%s\n", pad, pct, name, selfSuffix)
+		fmt.Fprintf(w, "%s[%.1f%%] %s%s\n", pad, pct, name, selfSuffix)
 		if depth >= maxDepth {
 			return
 		}
@@ -148,4 +149,61 @@ func (pt *pathTree) printTree(method string, maxDepth int, minPct float64, showS
 	for _, root := range sortedRoots {
 		walk(root, 1, 0)
 	}
+}
+
+// buildTreePT aggregates a downward call tree for the given method.
+// If method is empty, builds a root tree of all stacks.
+func buildTreePT(sf *stackFile, method string) *pathTree {
+	if method == "" {
+		return aggregateFromRoot(sf)
+	}
+	return aggregatePaths(sf, method, func(frames []string, j int) []string {
+		path := make([]string, len(frames)-j)
+		for k := j; k < len(frames); k++ {
+			path[k-j] = shortName(frames[k])
+		}
+		return path
+	})
+}
+
+// buildCallersPT aggregates an upward callers tree for the given method.
+func buildCallersPT(sf *stackFile, method string) *pathTree {
+	return aggregatePaths(sf, method, func(frames []string, j int) []string {
+		path := make([]string, j+1)
+		for k := 0; k <= j; k++ {
+			path[j-k] = shortName(frames[k])
+		}
+		return path
+	})
+}
+
+// treeDisplayMethod returns the display string for tree headers.
+func treeDisplayMethod(method string) string {
+	if method == "" {
+		return "(all)"
+	}
+	return method
+}
+
+// computeTreeString returns the call tree for the given method as a string.
+// If method is empty, builds a root tree of all stacks.
+func computeTreeString(sf *stackFile, method string, maxDepth int, minPct float64) string {
+	if sf.totalSamples == 0 {
+		return ""
+	}
+	pt := buildTreePT(sf, method)
+	var buf strings.Builder
+	pt.fprintTree(&buf, treeDisplayMethod(method), maxDepth, minPct, true)
+	return strings.TrimRight(buf.String(), "\n")
+}
+
+// computeCallersString returns the callers tree for the given method as a string.
+func computeCallersString(sf *stackFile, method string, maxDepth int, minPct float64) string {
+	if sf.totalSamples == 0 {
+		return ""
+	}
+	pt := buildCallersPT(sf, method)
+	var buf strings.Builder
+	pt.fprintTree(&buf, method, maxDepth, minPct, false)
+	return strings.TrimRight(buf.String(), "\n")
 }

@@ -1943,3 +1943,496 @@ for m in p.hot(3):
 		t.Fatalf("expected hot method output, got empty")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Bucket.profile
+// ---------------------------------------------------------------------------
+
+func TestBucketProfile(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A", "B"}, lines: []uint32{0, 0}, count: 5, thread: "t1"},
+		{frames: []string{"C", "D"}, lines: []uint32{0, 0}, count: 3, thread: "t1"},
+	})
+	timed := &parsedJFR{
+		eventCounts:   map[string]int{"cpu": 8},
+		stacksByEvent: map[string]*stackFile{"cpu": sf},
+		timedEvents: map[string][]timedEvent{
+			"cpu": {
+				{offsetNanos: 1e9, stackKey: "A;B", frames: []string{"A", "B"}, lines: []uint32{0, 0}, thread: "t1", weight: 3},
+				{offsetNanos: 2e9, stackKey: "C;D", frames: []string{"C", "D"}, lines: []uint32{0, 0}, thread: "t1", weight: 2},
+				{offsetNanos: 3e9, stackKey: "A;B", frames: []string{"A", "B"}, lines: []uint32{0, 0}, thread: "t1", weight: 2},
+				{offsetNanos: 4e9, stackKey: "C;D", frames: []string{"C", "D"}, lines: []uint32{0, 0}, thread: "t1", weight: 1},
+			},
+		},
+		spanNanos: 5e9,
+	}
+	p := newStarlarkProfile(sf, timed, "cpu", "test.jfr")
+	p.timedParsed = timed
+
+	out := captureOutput(func() {
+		code := runScript(`
+buckets = p.timeline(buckets=2)
+for b in buckets:
+    if b.samples > 0:
+        bp = b.profile
+        print(type(bp))
+        print(bp.samples == b.samples)
+        break
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected 2 lines, got %q", out)
+	}
+	if strings.TrimSpace(lines[0]) != "Profile" {
+		t.Fatalf("expected Profile type, got %q", lines[0])
+	}
+	if strings.TrimSpace(lines[1]) != "True" {
+		t.Fatalf("expected bucket profile samples to match bucket samples, got %q", lines[1])
+	}
+}
+
+func TestBucketProfileFilter(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A", "B"}, lines: []uint32{0, 0}, count: 5, thread: "t1"},
+		{frames: []string{"C", "D"}, lines: []uint32{0, 0}, count: 3, thread: "t1"},
+	})
+	timed := &parsedJFR{
+		eventCounts:   map[string]int{"cpu": 8},
+		stacksByEvent: map[string]*stackFile{"cpu": sf},
+		timedEvents: map[string][]timedEvent{
+			"cpu": {
+				{offsetNanos: 1e9, stackKey: "A;B", frames: []string{"A", "B"}, lines: []uint32{0, 0}, thread: "t1", weight: 5},
+				{offsetNanos: 2e9, stackKey: "C;D", frames: []string{"C", "D"}, lines: []uint32{0, 0}, thread: "t1", weight: 3},
+			},
+		},
+		spanNanos: 3e9,
+	}
+	p := newStarlarkProfile(sf, timed, "cpu", "test.jfr")
+	p.timedParsed = timed
+
+	out := captureOutput(func() {
+		code := runScript(`
+buckets = p.timeline(buckets=1)
+bp = buckets[0].profile
+filtered = bp.filter(lambda s: s.has("A"))
+print(filtered.samples)
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	if strings.TrimSpace(out) != "5" {
+		t.Fatalf("expected 5 filtered samples, got %q", out)
+	}
+}
+
+func TestBucketProfileTimeline(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A", "B"}, lines: []uint32{0, 0}, count: 4, thread: "t1"},
+	})
+	timed := &parsedJFR{
+		eventCounts:   map[string]int{"cpu": 4},
+		stacksByEvent: map[string]*stackFile{"cpu": sf},
+		timedEvents: map[string][]timedEvent{
+			"cpu": {
+				{offsetNanos: 1e9, stackKey: "A;B", frames: []string{"A", "B"}, lines: []uint32{0, 0}, thread: "t1", weight: 1},
+				{offsetNanos: 2e9, stackKey: "A;B", frames: []string{"A", "B"}, lines: []uint32{0, 0}, thread: "t1", weight: 1},
+				{offsetNanos: 3e9, stackKey: "A;B", frames: []string{"A", "B"}, lines: []uint32{0, 0}, thread: "t1", weight: 1},
+				{offsetNanos: 4e9, stackKey: "A;B", frames: []string{"A", "B"}, lines: []uint32{0, 0}, thread: "t1", weight: 1},
+			},
+		},
+		spanNanos: 5e9,
+	}
+	p := newStarlarkProfile(sf, timed, "cpu", "test.jfr")
+	p.timedParsed = timed
+
+	out := captureOutput(func() {
+		code := runScript(`
+buckets = p.timeline(buckets=2)
+# Get the first non-empty bucket's profile and check its timeline
+for b in buckets:
+    if b.samples > 0:
+        bp = b.profile
+        inner = bp.timeline(buckets=2)
+        total = 0
+        for ib in inner:
+            total += ib.samples
+        print(total == b.samples)
+        break
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	if strings.TrimSpace(out) != "True" {
+		t.Fatalf("expected bucket profile timeline to match bucket samples, got %q", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Profile.tree / Profile.trace / Profile.callers
+// ---------------------------------------------------------------------------
+
+func TestProfileTree(t *testing.T) {
+	p := testProfile()
+	out := captureOutput(func() {
+		code := runScript(`
+result = p.tree("Server.handle")
+print(result)
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	if !strings.Contains(out, "Server.handle") {
+		t.Fatalf("expected tree output to contain Server.handle, got %q", out)
+	}
+	if !strings.Contains(out, "%]") {
+		t.Fatalf("expected percentage in tree output, got %q", out)
+	}
+}
+
+func TestProfileTreeNoMethod(t *testing.T) {
+	p := testProfile()
+	out := captureOutput(func() {
+		code := runScript(`
+result = p.tree()
+print(result)
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	// Root tree should contain Thread.run (root frame).
+	if !strings.Contains(out, "Thread.run") {
+		t.Fatalf("expected root tree to contain Thread.run, got %q", out)
+	}
+}
+
+func TestProfileTreeDepth(t *testing.T) {
+	p := testProfile()
+	out := captureOutput(func() {
+		code := runScript(`
+result = p.tree("Server.handle", depth=1)
+print(result)
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	// With depth=1, we should see Server.handle but NOT its grandchildren.
+	if !strings.Contains(out, "Server.handle") {
+		t.Fatalf("expected Server.handle in output, got %q", out)
+	}
+	// HashMap.put is 2 levels below Server.handle — should be truncated by depth=1.
+	if strings.Contains(out, "HashMap.put") {
+		t.Fatalf("depth=1 should not show HashMap.put (2 levels deep), got %q", out)
+	}
+}
+
+func TestProfileTreeNoMatch(t *testing.T) {
+	p := testProfile()
+	out := captureOutput(func() {
+		code := runScript(`
+result = p.tree("NonExistent")
+print(result)
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	if !strings.Contains(out, "no frames matching") {
+		t.Fatalf("expected 'no frames matching' message, got %q", out)
+	}
+}
+
+func TestProfileTreeEmpty(t *testing.T) {
+	sf := makeStackFile(nil)
+	p := newStarlarkProfile(sf, nil, "cpu", "test")
+	out := captureOutput(func() {
+		code := runScript(`
+result = p.tree("anything")
+print(repr(result))
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	if !strings.Contains(out, `""`) {
+		t.Fatalf("expected empty string for empty profile tree, got %q", out)
+	}
+}
+
+func TestProfileTrace(t *testing.T) {
+	p := testProfile()
+	out := captureOutput(func() {
+		code := runScript(`
+result = p.trace("Server.handle")
+print(result)
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	if !strings.Contains(out, "Server.handle") {
+		t.Fatalf("expected trace output to contain Server.handle, got %q", out)
+	}
+	if !strings.Contains(out, "Hottest leaf:") {
+		t.Fatalf("expected 'Hottest leaf:' in trace output, got %q", out)
+	}
+}
+
+func TestProfileTraceRequired(t *testing.T) {
+	p := testProfile()
+	stderr := captureStream(&os.Stderr, func() {
+		code := runScript(`p.trace()`, "", nil, testTimeout, withPredeclared("p", p))
+		if code == 0 {
+			t.Fatalf("expected error when method not provided to trace()")
+		}
+	})
+	if !strings.Contains(stderr, "method") {
+		t.Fatalf("expected error about missing method, got %q", stderr)
+	}
+}
+
+func TestProfileTraceEmptyMethod(t *testing.T) {
+	p := testProfile()
+	stderr := captureStream(&os.Stderr, func() {
+		code := runScript(`p.trace("")`, "", nil, testTimeout, withPredeclared("p", p))
+		if code == 0 {
+			t.Fatalf("expected error for empty method string")
+		}
+	})
+	if !strings.Contains(stderr, "non-empty") {
+		t.Fatalf("expected 'non-empty' error, got %q", stderr)
+	}
+}
+
+func TestProfileTraceFQN(t *testing.T) {
+	p := testProfile()
+	out := captureOutput(func() {
+		code := runScript(`
+result = p.trace("Server.handle", fqn=True)
+print(result)
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	// FQN output should contain dots.
+	if !strings.Contains(out, "com.example") {
+		t.Fatalf("expected FQN with dots in trace output, got %q", out)
+	}
+}
+
+func TestProfileTraceNoMatch(t *testing.T) {
+	p := testProfile()
+	out := captureOutput(func() {
+		code := runScript(`
+result = p.trace("NonExistent")
+print(result)
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	if !strings.Contains(out, "no frames matching") {
+		t.Fatalf("expected 'no frames matching' message, got %q", out)
+	}
+}
+
+func TestProfileCallers(t *testing.T) {
+	p := testProfile()
+	out := captureOutput(func() {
+		code := runScript(`
+result = p.callers("HashMap.put")
+print(result)
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	if !strings.Contains(out, "HashMap.put") {
+		t.Fatalf("expected callers output to contain HashMap.put, got %q", out)
+	}
+	// Should show callers toward root.
+	if !strings.Contains(out, "Service.process") {
+		t.Fatalf("expected Service.process as caller, got %q", out)
+	}
+}
+
+func TestProfileCallersRequired(t *testing.T) {
+	p := testProfile()
+	stderr := captureStream(&os.Stderr, func() {
+		code := runScript(`p.callers()`, "", nil, testTimeout, withPredeclared("p", p))
+		if code == 0 {
+			t.Fatalf("expected error when method not provided to callers()")
+		}
+	})
+	if !strings.Contains(stderr, "method") {
+		t.Fatalf("expected error about missing method, got %q", stderr)
+	}
+}
+
+func TestProfileCallersEmptyMethod(t *testing.T) {
+	p := testProfile()
+	stderr := captureStream(&os.Stderr, func() {
+		code := runScript(`p.callers("")`, "", nil, testTimeout, withPredeclared("p", p))
+		if code == 0 {
+			t.Fatalf("expected error for empty method string")
+		}
+	})
+	if !strings.Contains(stderr, "non-empty") {
+		t.Fatalf("expected 'non-empty' error, got %q", stderr)
+	}
+}
+
+func TestProfileCallersNoMatch(t *testing.T) {
+	p := testProfile()
+	out := captureOutput(func() {
+		code := runScript(`
+result = p.callers("NonExistent")
+print(result)
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	if !strings.Contains(out, "no frames matching") {
+		t.Fatalf("expected 'no frames matching' message, got %q", out)
+	}
+}
+
+func TestProfileTreeReturnType(t *testing.T) {
+	p := testProfile()
+	out := captureOutput(func() {
+		code := runScript(`print(type(p.tree("Server")))`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	if strings.TrimSpace(out) != "string" {
+		t.Fatalf("expected string type, got %q", out)
+	}
+}
+
+func TestBucketProfileTree(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A", "B", "C"}, lines: []uint32{0, 0, 0}, count: 5, thread: "t1"},
+		{frames: []string{"A", "B", "D"}, lines: []uint32{0, 0, 0}, count: 3, thread: "t1"},
+	})
+	timed := &parsedJFR{
+		eventCounts:   map[string]int{"cpu": 8},
+		stacksByEvent: map[string]*stackFile{"cpu": sf},
+		timedEvents: map[string][]timedEvent{
+			"cpu": {
+				{offsetNanos: 1e9, stackKey: "A;B;C", frames: []string{"A", "B", "C"}, lines: []uint32{0, 0, 0}, thread: "t1", weight: 5},
+				{offsetNanos: 2e9, stackKey: "A;B;D", frames: []string{"A", "B", "D"}, lines: []uint32{0, 0, 0}, thread: "t1", weight: 3},
+			},
+		},
+		spanNanos: 3e9,
+	}
+	p := newStarlarkProfile(sf, timed, "cpu", "test.jfr")
+	p.timedParsed = timed
+
+	out := captureOutput(func() {
+		code := runScript(`
+buckets = p.timeline(buckets=1)
+bp = buckets[0].profile
+result = bp.tree("B")
+print(result)
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	if !strings.Contains(out, "B") || !strings.Contains(out, "%]") {
+		t.Fatalf("expected tree output from bucket profile, got %q", out)
+	}
+	if !strings.Contains(out, "C") || !strings.Contains(out, "D") {
+		t.Fatalf("expected children C and D in bucket profile tree, got %q", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// tree/trace/callers on real JFR fixtures
+// ---------------------------------------------------------------------------
+
+func TestProfileTreeJFR(t *testing.T) {
+	out := captureOutput(func() {
+		code := runScript(fmt.Sprintf(`
+p = open(%q)
+print(p.tree("Workload.lockStep", depth=2))
+`, scriptFixture("cpu.jfr")), "", nil, testTimeout)
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	if !strings.Contains(out, "Workload.lockStep") {
+		t.Fatalf("expected Workload.lockStep in tree, got %q", out)
+	}
+	if !strings.Contains(out, "%]") {
+		t.Fatalf("expected percentage in tree, got %q", out)
+	}
+}
+
+func TestProfileTraceJFR(t *testing.T) {
+	out := captureOutput(func() {
+		code := runScript(fmt.Sprintf(`
+p = open(%q)
+print(p.trace("Workload.lockStep"))
+`, scriptFixture("cpu.jfr")), "", nil, testTimeout)
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	if !strings.Contains(out, "Workload.lockStep") {
+		t.Fatalf("expected Workload.lockStep in trace, got %q", out)
+	}
+	if !strings.Contains(out, "Hottest leaf:") {
+		t.Fatalf("expected Hottest leaf in trace, got %q", out)
+	}
+}
+
+func TestProfileCallersJFR(t *testing.T) {
+	out := captureOutput(func() {
+		code := runScript(fmt.Sprintf(`
+p = open(%q)
+print(p.callers("Workload.computeStep"))
+`, scriptFixture("cpu.jfr")), "", nil, testTimeout)
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	if !strings.Contains(out, "Workload.computeStep") {
+		t.Fatalf("expected Workload.computeStep in callers, got %q", out)
+	}
+	if !strings.Contains(out, "Thread.run") {
+		t.Fatalf("expected Thread.run as caller, got %q", out)
+	}
+}
+
+func TestProfileTreeJFRTimeline(t *testing.T) {
+	out := captureOutput(func() {
+		code := runScript(fmt.Sprintf(`
+p = open(%q)
+buckets = p.timeline(buckets=2)
+for b in buckets:
+    if b.samples > 0:
+        result = b.profile.tree("Workload", depth=2)
+        if "Workload" in result:
+            print("OK")
+            break
+`, scriptFixture("cpu.jfr")), "", nil, testTimeout)
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	if strings.TrimSpace(out) != "OK" {
+		t.Fatalf("expected OK from bucket.profile.tree on JFR, got %q", out)
+	}
+}
