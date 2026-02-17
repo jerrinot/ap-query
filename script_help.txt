@@ -44,6 +44,7 @@ Types:
     .filter(fn(Stack)→bool)            → Profile          Keep matching stacks.
     .group_by(fn(Stack)→string|None)   → dict[str,Profile] Partition by key; None excludes.
     .timeline(resolution?, buckets?)   → list[Bucket]     Time buckets. JFR only.
+        resolution: duration string ("1s") or keyword-only numeric seconds (resolution=30).
         First call re-parses JFR with timestamps (expensive on large files).
     .split(times list[float])          → list[Profile]    Split at second boundaries. JFR only.
     .tree(method="", depth=4, min_pct=1.0)   → string  Call tree from method (or root).

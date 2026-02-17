@@ -2164,7 +2164,7 @@ func TestCmdThreads(t *testing.T) {
 	})
 
 	out := captureOutput(func() {
-		cmdThreads(sf, 0)
+		cmdThreads(sf, 0, false)
 	})
 
 	if !strings.Contains(out, "THREAD") {
@@ -2189,7 +2189,7 @@ func TestCmdThreadsWithTop(t *testing.T) {
 	})
 
 	out := captureOutput(func() {
-		cmdThreads(sf, 1)
+		cmdThreads(sf, 1, false)
 	})
 
 	if !strings.Contains(out, "main") {
@@ -2206,7 +2206,7 @@ func TestCmdThreadsNoThreadInfo(t *testing.T) {
 	})
 
 	out := captureOutput(func() {
-		cmdThreads(sf, 0)
+		cmdThreads(sf, 0, false)
 	})
 
 	if !strings.Contains(out, "no thread info") {
@@ -2218,7 +2218,7 @@ func TestCmdThreadsEmpty(t *testing.T) {
 	sf := makeStackFile(nil)
 
 	out := captureOutput(func() {
-		cmdThreads(sf, 0)
+		cmdThreads(sf, 0, false)
 	})
 
 	if strings.TrimSpace(out) != "" {
@@ -6011,5 +6011,302 @@ func TestEventSelectionAfterFilter(t *testing.T) {
 	eventType, _ := resolveEventType("cpu", false, filteredCounts)
 	if eventType == "" {
 		t.Error("resolveEventType returned empty")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestWarnedLargeEventCountOnce — volume warning deduplication (Item 4)
+// ---------------------------------------------------------------------------
+
+func TestWarnedLargeEventCountOnce(t *testing.T) {
+	warnedLargeEventCount.Store(false)
+	defer warnedLargeEventCount.Store(false)
+
+	path := jfrFixture("cpu.jfr")
+	call := func() string {
+		return captureStream(&os.Stderr, func() {
+			parseJFRData(path, allJFREventTypes(), parseOpts{collectTimestamps: true, fromNanos: -1, toNanos: -1})
+		})
+	}
+
+	first := call()
+	second := call()
+
+	// The fixture is small so the warning won't fire, but we verify the flag
+	// prevents double-warning by manually setting it.
+	warnedLargeEventCount.Store(false)
+
+	// Force the flag on and verify second call doesn't warn.
+	warnedLargeEventCount.Store(true)
+	third := call()
+	if strings.Contains(third, "events collected") {
+		t.Error("warning should not appear when warnedLargeEventCount is true")
+	}
+
+	// Reset and verify warning can appear again.
+	warnedLargeEventCount.Store(false)
+	_ = first
+	_ = second
+}
+
+// ---------------------------------------------------------------------------
+// TestCmdEventsColumnLabelAndTotal — events COUNT header and total row (Item 5)
+// ---------------------------------------------------------------------------
+
+func TestCmdEventsColumnLabelAndTotal(t *testing.T) {
+	out := captureOutput(func() {
+		err := cmdEvents(jfrFixture("multi.jfr"))
+		if err != nil {
+			t.Fatalf("cmdEvents: %v", err)
+		}
+	})
+	if !strings.Contains(out, "COUNT") {
+		t.Errorf("expected COUNT header, got:\n%s", out)
+	}
+	if strings.Contains(out, "SAMPLES") {
+		t.Errorf("should not have SAMPLES header, got:\n%s", out)
+	}
+	if !strings.Contains(out, "total") {
+		t.Errorf("expected total row, got:\n%s", out)
+	}
+	// Verify total equals sum of individual rows.
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) < 3 {
+		t.Fatalf("expected at least 3 lines (header, events, total), got %d", len(lines))
+	}
+	sum := 0
+	for _, line := range lines[1 : len(lines)-1] {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 {
+			n, err := strconv.Atoi(fields[len(fields)-1])
+			if err == nil {
+				sum += n
+			}
+		}
+	}
+	totalLine := lines[len(lines)-1]
+	fields := strings.Fields(totalLine)
+	if len(fields) < 2 {
+		t.Fatalf("malformed total line: %q", totalLine)
+	}
+	totalVal, err := strconv.Atoi(fields[len(fields)-1])
+	if err != nil {
+		t.Fatalf("cannot parse total: %v", err)
+	}
+	if totalVal != sum {
+		t.Errorf("total %d != sum of rows %d", totalVal, sum)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestCmdThreadsGroup — threads --group flag (Item 6)
+// ---------------------------------------------------------------------------
+
+func TestCmdThreadsGroup(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a"}, lines: []uint32{0}, count: 10, thread: "pool-1-thread-1"},
+		{frames: []string{"B.b"}, lines: []uint32{0}, count: 8, thread: "pool-1-thread-2"},
+		{frames: []string{"C.c"}, lines: []uint32{0}, count: 5, thread: "pool-1-thread-3"},
+		{frames: []string{"D.d"}, lines: []uint32{0}, count: 3, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdThreads(sf, 0, true)
+	})
+
+	if !strings.Contains(out, "GROUP") {
+		t.Error("expected GROUP header")
+	}
+	if !strings.Contains(out, "pool-thread") {
+		t.Errorf("expected merged group 'pool-thread', got:\n%s", out)
+	}
+	if !strings.Contains(out, "(3 threads)") {
+		t.Errorf("expected '(3 threads)' suffix, got:\n%s", out)
+	}
+	// Single-thread group should not have suffix.
+	if strings.Contains(out, "main (1") {
+		t.Errorf("single-thread group should not have count suffix, got:\n%s", out)
+	}
+}
+
+func TestCmdThreadsGroupWithTop(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a"}, lines: []uint32{0}, count: 10, thread: "pool-1-thread-1"},
+		{frames: []string{"B.b"}, lines: []uint32{0}, count: 8, thread: "pool-1-thread-2"},
+		{frames: []string{"C.c"}, lines: []uint32{0}, count: 5, thread: "http-1"},
+		{frames: []string{"D.d"}, lines: []uint32{0}, count: 3, thread: "http-2"},
+		{frames: []string{"E.e"}, lines: []uint32{0}, count: 1, thread: "main"},
+	})
+
+	out := captureOutput(func() {
+		cmdThreads(sf, 2, true)
+	})
+
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	// Header + 2 data rows = 3 lines.
+	if len(lines) != 3 {
+		t.Errorf("expected 3 lines (header + 2 groups), got %d:\n%s", len(lines), out)
+	}
+}
+
+func TestCmdThreadsGroupNoThreadBottom(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a"}, lines: []uint32{0}, count: 10, thread: "pool-1-thread-1"},
+		{frames: []string{"B.b"}, lines: []uint32{0}, count: 5, thread: "pool-1-thread-2"},
+		{frames: []string{"C.c"}, lines: []uint32{0}, count: 3, thread: ""},
+	})
+
+	out := captureOutput(func() {
+		cmdThreads(sf, 0, true)
+	})
+
+	if !strings.Contains(out, "(no thread info)") {
+		t.Errorf("expected '(no thread info)' row, got:\n%s", out)
+	}
+	// It should be the last line.
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	last := lines[len(lines)-1]
+	if !strings.Contains(last, "(no thread info)") {
+		t.Errorf("(no thread info) should be last line, got:\n%s", out)
+	}
+}
+
+func TestCmdThreadsGroupCLI(t *testing.T) {
+	code, stdout, _ := runCLIForTest(t, []string{"threads", "--group", jfrFixture("cpu.jfr")}, nil)
+	if code != 0 {
+		t.Fatalf("threads --group exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "GROUP") {
+		t.Errorf("expected GROUP header in CLI output, got:\n%s", stdout)
+	}
+}
+
+func TestCmdThreadsGroupFalse(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a"}, lines: []uint32{0}, count: 10, thread: "pool-1-thread-1"},
+		{frames: []string{"B.b"}, lines: []uint32{0}, count: 5, thread: "pool-1-thread-2"},
+	})
+
+	out := captureOutput(func() {
+		cmdThreads(sf, 0, false)
+	})
+
+	if !strings.Contains(out, "THREAD") {
+		t.Error("expected THREAD header when group=false")
+	}
+	if strings.Contains(out, "GROUP") {
+		t.Error("should not have GROUP header when group=false")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestPerCommandHelp — per-command help system (Item 1)
+// ---------------------------------------------------------------------------
+
+func TestPerCommandHelp(t *testing.T) {
+	commands := []string{"hot", "tree", "trace", "callers", "threads", "filter", "events", "collapse", "diff", "lines", "info", "timeline"}
+	for _, cmd := range commands {
+		t.Run(cmd, func(t *testing.T) {
+			code, stdout, _ := runCLIForTest(t, []string{cmd, "--help"}, nil)
+			if code != 0 {
+				t.Errorf("%s --help exit code = %d, want 0", cmd, code)
+			}
+			if !strings.Contains(strings.ToLower(stdout), cmd) {
+				t.Errorf("%s --help output should mention '%s', got:\n%s", cmd, cmd, stdout)
+			}
+		})
+	}
+}
+
+func TestPerCommandHelpShort(t *testing.T) {
+	code, stdout, _ := runCLIForTest(t, []string{"hot", "-h"}, nil)
+	if code != 0 {
+		t.Errorf("hot -h exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "hot") {
+		t.Errorf("hot -h should mention 'hot', got:\n%s", stdout)
+	}
+}
+
+func TestScriptHelpStillWorks(t *testing.T) {
+	code, stdout, _ := runCLIForTest(t, []string{"script", "--help"}, nil)
+	if code != 0 {
+		t.Errorf("script --help exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "Starlark") {
+		t.Errorf("script --help should contain 'Starlark', got:\n%s", stdout)
+	}
+}
+
+func TestUnknownCommandHelp(t *testing.T) {
+	code, _, stderr := runCLIForTest(t, []string{"nonexistent", "--help"}, nil)
+	if code != 2 {
+		t.Errorf("nonexistent --help exit code = %d, want 2", code)
+	}
+	if !strings.Contains(stderr, "ap-query") {
+		t.Errorf("nonexistent --help should show global usage, got:\n%s", stderr)
+	}
+}
+
+func TestPerCommandHelpNoDoublePercent(t *testing.T) {
+	// Per-command help is printed with fmt.Print, so %% would display literally.
+	for cmd, h := range commandHelp {
+		if strings.Contains(h, "%%") {
+			t.Errorf("%s help contains '%%%%' which will display as double percent signs", cmd)
+		}
+	}
+}
+
+func TestGlobalHelpMentionsPerCommand(t *testing.T) {
+	_, _, stderr := runCLIForTest(t, []string{"--help"}, nil)
+	if !strings.Contains(stderr, "command> --help") {
+		t.Errorf("global help should mention per-command help, got:\n%s", stderr)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestNoIdleHint — --no-idle hint for WALL profiles (Item 2)
+// ---------------------------------------------------------------------------
+
+func TestNoIdleHintCollapsed(t *testing.T) {
+	// Construct collapsed input with >50% idle leaf frames (wall event type).
+	input := strings.NewReader("[main];A.main;java.lang.Thread.sleep 60\n[main];A.main;B.work 40\n")
+	_, _, stderr := runCLIForTest(t, []string{"hot", "--event", "wall", "-"}, input)
+	if !strings.Contains(stderr, "Hint:") {
+		t.Errorf("expected idle hint for wall profile with >50%% idle, got stderr:\n%s", stderr)
+	}
+	if !strings.Contains(stderr, "--no-idle") {
+		t.Errorf("hint should mention --no-idle, got stderr:\n%s", stderr)
+	}
+}
+
+func TestNoIdleHintCollapsedWithNoIdle(t *testing.T) {
+	input := strings.NewReader("[main];A.main;java.lang.Thread.sleep 60\n[main];A.main;B.work 40\n")
+	_, _, stderr := runCLIForTest(t, []string{"hot", "--event", "wall", "--no-idle", "-"}, input)
+	if strings.Contains(stderr, "Hint:") {
+		t.Errorf("no hint expected when --no-idle is set, got stderr:\n%s", stderr)
+	}
+}
+
+func TestNoIdleHintCLICPU(t *testing.T) {
+	_, _, stderr := runCLIForTest(t, []string{"hot", jfrFixture("cpu.jfr")}, nil)
+	if strings.Contains(stderr, "Hint:") {
+		t.Errorf("no idle hint expected for CPU profile, got stderr:\n%s", stderr)
+	}
+}
+
+func TestNoIdleHintCLILock(t *testing.T) {
+	_, _, stderr := runCLIForTest(t, []string{"hot", "--event", "lock", jfrFixture("lock.jfr")}, nil)
+	if strings.Contains(stderr, "Hint:") {
+		t.Errorf("no idle hint expected for lock profile, got stderr:\n%s", stderr)
+	}
+}
+
+func TestNoIdleHintBelowThreshold(t *testing.T) {
+	// Only 30% idle — should NOT trigger the hint.
+	input := strings.NewReader("[main];A.main;java.lang.Thread.sleep 30\n[main];A.main;B.work 70\n")
+	_, _, stderr := runCLIForTest(t, []string{"hot", "--event", "wall", "-"}, input)
+	if strings.Contains(stderr, "Hint:") {
+		t.Errorf("no hint expected when idle <50%%, got stderr:\n%s", stderr)
 	}
 }

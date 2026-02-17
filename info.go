@@ -5,6 +5,25 @@ import (
 	"strings"
 )
 
+const infoHelp = `Usage: ap-query info [flags] <file>
+
+One-shot triage: events, threads, hot methods, and drill-down.
+
+Flags:
+  --expand N              Auto-expand top N hot methods (default: 3, 0=off).
+  --top-threads N         Threads shown (default: 10, 0=all).
+  --top-methods N         Hot methods shown (default: 20, 0=all).
+  --event TYPE, -e TYPE   Event type (default: cpu).
+  -t THREAD               Filter to threads matching substring.
+  --from DURATION         Start of time window (JFR only).
+  --to DURATION           End of time window (JFR only).
+  --no-idle               Remove idle leaf frames.
+
+Examples:
+  ap-query info profile.jfr
+  ap-query info profile.jfr --expand 0 --top-methods 10
+`
+
 type infoOpts struct {
 	eventType     string
 	isJFR         bool

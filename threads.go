@@ -5,6 +5,24 @@ import (
 	"sort"
 )
 
+const threadsHelp = `Usage: ap-query threads [flags] <file>
+
+Thread sample distribution.
+
+Flags:
+  --top N                 Limit output rows (default: unlimited).
+  --group                 Group threads by normalized name.
+  --event TYPE, -e TYPE   Event type (default: cpu).
+  -t THREAD               Filter to threads matching substring.
+  --from DURATION         Start of time window (JFR only).
+  --to DURATION           End of time window (JFR only).
+  --no-idle               Remove idle leaf frames.
+
+Examples:
+  ap-query threads profile.jfr
+  ap-query threads profile.jfr --group --top 10
+`
+
 type threadEntry struct {
 	name    string
 	samples int
@@ -172,11 +190,30 @@ func groupThreads(entries []threadEntry) []threadGroupEntry {
 	return groupThreadsWith(entries, assignGroups(entries))
 }
 
-func cmdThreads(sf *stackFile, top int) {
+func cmdThreads(sf *stackFile, top int, group bool) {
 	ranked, noThread, hasThread := computeThreads(sf)
 	if !hasThread {
 		if sf.totalSamples > 0 {
 			fmt.Println("no thread info in this file")
+		}
+		return
+	}
+
+	if group {
+		groups := groupThreads(ranked)
+		groups = groups[:truncate(len(groups), top)]
+		fmt.Printf("%-30s %9s %7s\n", "GROUP", "SAMPLES", "PCT")
+		for _, g := range groups {
+			label := g.name
+			if g.threads > 1 {
+				label = fmt.Sprintf("%s (%d threads)", g.name, g.threads)
+			}
+			pct := pctOf(g.samples, sf.totalSamples)
+			fmt.Printf("%-30s %9d %6.1f%%\n", label, g.samples, pct)
+		}
+		if noThread > 0 {
+			pct := pctOf(noThread, sf.totalSamples)
+			fmt.Printf("%-30s %9d %6.1f%%\n", "(no thread info)", noThread, pct)
 		}
 		return
 	}

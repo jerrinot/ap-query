@@ -10,6 +10,7 @@ allowed-tools: Bash, Read, Grep, Glob
 
 Analyze async-profiler JFR recordings with `{{AP_QUERY_PATH}}`.
 Run `{{AP_QUERY_PATH}} --help` for full command and flag reference.
+Run `{{AP_QUERY_PATH}} <command> --help` for command-specific help.
 
 Always prefer JFR format over collapsed text. JFR preserves event types (cpu/wall/alloc/lock),
 line numbers, and thread info — collapsed text loses event separation and may lack line data.
@@ -77,6 +78,8 @@ By default all threads are aggregated. Use `-t THREAD` (substring match) to isol
 thread or thread group — essential when different threads have different workloads
 (e.g. `-t "http-nio"` vs `-t "kafka-consumer"`). The `threads` command shows the sample
 distribution across threads to help pick the right filter.
+Use `--group` with `threads` to aggregate by normalized name
+(e.g. all `pool-1-thread-N` merge into `pool-thread`).
 
 ## Output options
 

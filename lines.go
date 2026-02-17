@@ -5,6 +5,24 @@ import (
 	"sort"
 )
 
+const linesHelp = `Usage: ap-query lines [flags] <file>
+
+Source-line breakdown inside a method (-m required).
+
+Flags:
+  -m METHOD, --method METHOD   Substring match on method name (required).
+  --top N                      Limit output rows (default: unlimited).
+  --fqn                        Show fully-qualified names.
+  --event TYPE, -e TYPE        Event type (default: cpu).
+  -t THREAD                    Filter to threads matching substring.
+  --from DURATION              Start of time window (JFR only).
+  --to DURATION                End of time window (JFR only).
+  --no-idle                    Remove idle leaf frames.
+
+Examples:
+  ap-query lines profile.jfr -m HashMap.resize
+`
+
 type lineEntry struct {
 	name    string
 	line    uint32

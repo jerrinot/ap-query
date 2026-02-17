@@ -10,11 +10,14 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"github.com/grafana/jfr-parser/parser"
 	"github.com/grafana/jfr-parser/parser/types"
 	"github.com/grafana/jfr-parser/parser/types/def"
 )
+
+var warnedLargeEventCount atomic.Bool
 
 // ---------------------------------------------------------------------------
 // Data model
@@ -542,7 +545,7 @@ func parseJFRData(path string, stackEvents map[string]struct{}, opts parseOpts) 
 		for _, events := range timedByEvent {
 			total += len(events)
 		}
-		if total > 10_000_000 {
+		if total > 10_000_000 && warnedLargeEventCount.CompareAndSwap(false, true) {
 			fmt.Fprintf(os.Stderr, "warning: %d events collected; consider using --from/--to to narrow the time window\n", total)
 		}
 	}

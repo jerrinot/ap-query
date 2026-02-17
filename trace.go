@@ -8,6 +8,26 @@ import (
 	"strings"
 )
 
+const traceHelp = `Usage: ap-query trace [flags] <file>
+
+Hottest path from a method to leaf (-m required).
+
+Flags:
+  -m METHOD, --method METHOD   Substring match on method name (required).
+  --min-pct F                  Hide nodes below this % (default: 0.5).
+  --fqn                        Show fully-qualified names.
+  --hide REGEX                 Remove matching frames before analysis.
+  --event TYPE, -e TYPE        Event type (default: cpu).
+  -t THREAD                    Filter to threads matching substring.
+  --from DURATION              Start of time window (JFR only).
+  --to DURATION                End of time window (JFR only).
+  --no-idle                    Remove idle leaf frames.
+
+Examples:
+  ap-query trace profile.jfr -m HashMap.resize
+  ap-query trace profile.jfr -m HashMap.resize --min-pct 0.5
+`
+
 func cmdTrace(sf *stackFile, method string, minPct float64, fqn bool) {
 	writeTrace(os.Stdout, sf, method, minPct, fqn)
 }

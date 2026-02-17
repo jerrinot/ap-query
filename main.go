@@ -87,6 +87,7 @@ Command-specific flags:
   --resolution DURATION        Fixed bucket width for timeline (e.g. 1s, 500ms). Overrides --buckets.
   --no-top-method              Omit per-bucket top method annotation from timeline (shown by default).
   --no-idle                    Remove stacks with idle leaf frames (futex, sched_yield, epoll_wait, sleep, park).
+  --group                      Group threads by normalized name (threads command only).
 
 Examples:
   ap-query info profile.jfr
@@ -103,8 +104,25 @@ Examples:
   ap-query diff before.jfr after.jfr --min-delta 0.5
   ap-query collapse profile.jfr --event wall | ap-query hot -
   echo "A;B;C 10" | ap-query hot -
+
+Run 'ap-query <command> --help' for command-specific help.
 `)
 	os.Exit(2)
+}
+
+var commandHelp = map[string]string{
+	"hot":      hotHelp,
+	"tree":     treeHelp,
+	"trace":    traceHelp,
+	"callers":  callersHelp,
+	"threads":  threadsHelp,
+	"filter":   filterHelp,
+	"events":   eventsHelp,
+	"collapse": collapseHelp,
+	"diff":     diffHelp,
+	"lines":    linesHelp,
+	"info":     infoHelp,
+	"timeline": timelineHelp,
 }
 
 // ---------------------------------------------------------------------------
@@ -130,7 +148,7 @@ func parseFlags(args []string) flags {
 			key := strings.TrimLeft(a, "-")
 			// Known boolean flags
 			switch key {
-			case "fqn", "include-callers", "force", "project", "claude", "codex", "stdout", "top-method", "no-top-method", "no-idle":
+			case "fqn", "include-callers", "force", "project", "claude", "codex", "stdout", "top-method", "no-top-method", "no-idle", "group":
 				f.bools[key] = true
 				i++
 				continue
@@ -354,6 +372,21 @@ func main() {
 		printVersion(os.Stdout)
 		return
 	}
+	if cmd != "script" {
+		for _, a := range os.Args[2:] {
+			if a == "-h" || a == "--help" {
+				if h, ok := commandHelp[cmd]; ok {
+					fmt.Print(h)
+				} else {
+					usage()
+				}
+				return
+			}
+			if a == "--" {
+				break
+			}
+		}
+	}
 	f := parseFlags(os.Args[2:])
 	if cmd == "update" {
 		cmdUpdate(f.boolean("force"))
@@ -523,6 +556,20 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Window: start to %s\n", formatDuration(toNanos))
 		}
 	}
+	if eventType == "wall" && !noIdle {
+		idleCount := 0
+		for i := range sf.stacks {
+			st := &sf.stacks[i]
+			if len(st.frames) > 0 && isIdleLeaf(st.frames[len(st.frames)-1]) {
+				idleCount += st.count
+			}
+		}
+		if sf.totalSamples > 0 && float64(idleCount)/float64(sf.totalSamples) > 0.5 {
+			fmt.Fprintf(os.Stderr,
+				"Hint: %.0f%% of samples have idle leaf frames; consider --no-idle\n",
+				pctOf(idleCount, sf.totalSamples))
+		}
+	}
 
 	switch cmd {
 	case "hot":
@@ -589,7 +636,8 @@ func main() {
 
 	case "threads":
 		top := f.intVal([]string{"top"}, 0)
-		cmdThreads(sf, top)
+		group := f.boolean("group")
+		cmdThreads(sf, top, group)
 
 	case "filter":
 		method := f.str("m", "method")

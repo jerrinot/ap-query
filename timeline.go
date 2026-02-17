@@ -10,6 +10,27 @@ import (
 	"time"
 )
 
+const timelineHelp = `Usage: ap-query timeline [flags] <file>
+
+Sample distribution over time (JFR only).
+
+Flags:
+  --buckets N                  Number of time buckets (default: auto ~20).
+  --resolution DURATION        Fixed bucket width (e.g. 1s, 500ms). Overrides --buckets.
+  -m METHOD, --method METHOD   Only count samples containing METHOD.
+  --no-top-method              Omit per-bucket hot method annotation.
+  --hide REGEX                 Remove matching frames before analysis.
+  --event TYPE, -e TYPE        Event type (default: cpu).
+  -t THREAD                    Filter to threads matching substring.
+  --from DURATION              Start of time window.
+  --to DURATION                End of time window.
+  --no-idle                    Remove idle leaf frames.
+
+Examples:
+  ap-query timeline profile.jfr
+  ap-query timeline profile.jfr --from 12s --to 14s --resolution 500ms
+`
+
 func resolveBucketRange(fromNanos, toNanos, span int64, events []timedEvent) (bucketOrigin, bucketSpan int64) {
 	if fromNanos >= 0 {
 		bucketOrigin = fromNanos

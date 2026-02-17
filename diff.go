@@ -6,6 +6,22 @@ import (
 	"sort"
 )
 
+const diffHelp = `Usage: ap-query diff [flags] <before> <after>
+
+Compare two profiles: shows REGRESSION / IMPROVEMENT / NEW / GONE.
+
+Flags:
+  --min-delta F               Hide entries below this % change (default: 0.5).
+  --top N                     Limit output rows (default: unlimited).
+  --fqn                       Show fully-qualified names.
+  --event TYPE, -e TYPE       Event type (default: cpu).
+  -t THREAD                   Filter to threads matching substring.
+
+Examples:
+  ap-query diff before.jfr after.jfr
+  ap-query diff before.jfr after.jfr --min-delta 0.5
+`
+
 func selfPcts(sf *stackFile, fqn bool) map[string]float64 {
 	counts := selfCounts(sf, fqn)
 	pcts := make(map[string]float64)

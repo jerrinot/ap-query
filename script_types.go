@@ -302,10 +302,37 @@ func (p *starlarkProfile) profileTimedEvents(all []timedEvent) []timedEvent {
 }
 
 func (p *starlarkProfile) methodTimeline(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-	var resolution string
+	var resolutionVal starlark.Value
 	var buckets int
-	if err := starlark.UnpackArgs(b.Name(), args, kwargs, "resolution?", &resolution, "buckets?", &buckets); err != nil {
+	if err := starlark.UnpackArgs(b.Name(), args, kwargs, "resolution?", &resolutionVal, "buckets?", &buckets); err != nil {
 		return nil, err
+	}
+
+	var resolution string
+	if resolutionVal != nil {
+		switch v := resolutionVal.(type) {
+		case starlark.String:
+			resolution = string(v)
+		case starlark.Int:
+			if len(args) > 0 {
+				return nil, fmt.Errorf("timeline: numeric resolution requires keyword form: timeline(resolution=%v)", v)
+			}
+			n, ok := v.Int64()
+			if !ok {
+				return nil, fmt.Errorf("timeline: resolution integer too large")
+			}
+			resolution = fmt.Sprintf("%ds", n)
+		case starlark.Float:
+			if len(args) > 0 {
+				return nil, fmt.Errorf("timeline: numeric resolution requires keyword form: timeline(resolution=%v)", v)
+			}
+			d := time.Duration(float64(v) * float64(time.Second))
+			resolution = d.String()
+		case starlark.NoneType:
+			// default
+		default:
+			return nil, fmt.Errorf("timeline: resolution must be string, int, or float, got %s", resolutionVal.Type())
+		}
 	}
 
 	timed, err := p.ensureTimedParsed()

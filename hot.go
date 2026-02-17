@@ -5,6 +5,26 @@ import (
 	"sort"
 )
 
+const hotHelp = `Usage: ap-query hot [flags] <file>
+
+Rank methods by self-time and total-time.
+
+Flags:
+  --event TYPE, -e TYPE   Event type: cpu, wall, alloc, lock (default: cpu).
+  --top N                 Limit output rows (default: 10).
+  --fqn                   Show fully-qualified names.
+  --assert-below F        Exit 1 if top method self% >= F (for CI gates).
+  -t THREAD               Filter to threads matching substring.
+  --from DURATION         Start of time window (JFR only).
+  --to DURATION           End of time window (JFR only).
+  --no-idle               Remove idle leaf frames.
+
+Examples:
+  ap-query hot profile.jfr --event cpu --top 20
+  ap-query hot profile.jfr -t "http-nio" --assert-below 15.0
+  echo "A;B;C 10" | ap-query hot -
+`
+
 type hotEntry struct {
 	name       string
 	selfCount  int

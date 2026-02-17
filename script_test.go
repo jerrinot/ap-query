@@ -2436,3 +2436,83 @@ for b in buckets:
 		t.Fatalf("expected OK from bucket.profile.tree on JFR, got %q", out)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Timeline numeric resolution (Item 3)
+// ---------------------------------------------------------------------------
+
+func TestTimelineNumericResolutionInt(t *testing.T) {
+	// resolution=30 (integer keyword) should work like resolution="30s".
+	outKw := captureOutput(func() {
+		code := runScript(fmt.Sprintf(`
+p = open(%q)
+buckets = p.timeline(resolution=30)
+print(len(buckets))
+`, scriptFixture("cpu.jfr")), "", nil, testTimeout)
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	outStr := captureOutput(func() {
+		code := runScript(fmt.Sprintf(`
+p = open(%q)
+buckets = p.timeline(resolution="30s")
+print(len(buckets))
+`, scriptFixture("cpu.jfr")), "", nil, testTimeout)
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	if strings.TrimSpace(outKw) != strings.TrimSpace(outStr) {
+		t.Errorf("resolution=30 produced %q buckets, resolution='30s' produced %q", outKw, outStr)
+	}
+}
+
+func TestTimelineNumericResolutionFloat(t *testing.T) {
+	out := captureOutput(func() {
+		code := runScript(fmt.Sprintf(`
+p = open(%q)
+buckets = p.timeline(resolution=0.5)
+print(len(buckets))
+`, scriptFixture("cpu.jfr")), "", nil, testTimeout)
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	n := strings.TrimSpace(out)
+	if n == "0" {
+		t.Fatal("expected buckets > 0 for sub-second resolution")
+	}
+}
+
+func TestTimelineNumericPositionalError(t *testing.T) {
+	stderr := captureStream(&os.Stderr, func() {
+		code := runScript(fmt.Sprintf(`
+p = open(%q)
+buckets = p.timeline(30)
+print(len(buckets))
+`, scriptFixture("cpu.jfr")), "", nil, testTimeout)
+		if code == 0 {
+			t.Fatal("expected error for positional numeric resolution")
+		}
+	})
+	if !strings.Contains(stderr, "keyword") {
+		t.Errorf("error should mention 'keyword', got: %q", stderr)
+	}
+}
+
+func TestTimelineResolutionBadType(t *testing.T) {
+	stderr := captureStream(&os.Stderr, func() {
+		code := runScript(fmt.Sprintf(`
+p = open(%q)
+buckets = p.timeline(resolution=True)
+print(len(buckets))
+`, scriptFixture("cpu.jfr")), "", nil, testTimeout)
+		if code == 0 {
+			t.Fatal("expected error for bool resolution")
+		}
+	})
+	if !strings.Contains(stderr, "must be string, int, or float") {
+		t.Errorf("error should mention type constraint, got: %q", stderr)
+	}
+}
