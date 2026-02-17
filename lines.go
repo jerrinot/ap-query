@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"sort"
 )
 
@@ -79,12 +80,16 @@ func computeLines(sf *stackFile, method string, top int, fqn bool) (result []lin
 }
 
 func cmdLines(sf *stackFile, method string, top int, fqn bool) error {
+	if sf.totalSamples == 0 {
+		fmt.Fprintln(os.Stdout, "no samples (empty profile or all filtered out)")
+		return nil
+	}
 	ranked, hasMethod := computeLines(sf, method, top, fqn)
 	if ranked == nil {
 		if hasMethod {
 			return fmt.Errorf("no line info for frames matching '%s'", method)
 		}
-		fmt.Printf("no frames matching '%s'\n", method)
+		noMatchMessage(os.Stdout, sf, method)
 		return nil
 	}
 

@@ -175,6 +175,7 @@ func cmdTimeline(parsed *parsedJFR, eventType string,
 	}
 
 	// Method filtering.
+	preMethodEvents := events
 	var matchedWeight int
 	if method != "" {
 		var methodFiltered []timedEvent
@@ -190,6 +191,11 @@ func cmdTimeline(parsed *parsedJFR, eventType string,
 		events = methodFiltered
 	} else {
 		matchedWeight = totalWeight
+	}
+
+	if method != "" && matchedWeight == 0 {
+		noMatchMessage(os.Stdout, stackFileFromEvents(preMethodEvents), method)
+		return
 	}
 
 	numBuckets, bucketWidth := computeBucketWidth(bucketSpan, buckets, resolution)

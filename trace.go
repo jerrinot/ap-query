@@ -29,14 +29,14 @@ Examples:
 `
 
 func cmdTrace(sf *stackFile, method string, minPct float64, fqn bool) {
+	if sf.totalSamples == 0 {
+		fmt.Fprintln(os.Stdout, "no samples (empty profile or all filtered out)")
+		return
+	}
 	writeTrace(os.Stdout, sf, method, minPct, fqn)
 }
 
 func writeTrace(w io.Writer, sf *stackFile, method string, minPct float64, fqn bool) {
-	if sf.totalSamples == 0 {
-		return
-	}
-
 	pt := aggregatePaths(sf, method, func(frames []string, j int) []string {
 		path := make([]string, len(frames)-j)
 		for k := j; k < len(frames); k++ {
@@ -50,7 +50,7 @@ func writeTrace(w io.Writer, sf *stackFile, method string, minPct float64, fqn b
 	})
 
 	if len(pt.samples) == 0 {
-		fmt.Fprintf(w, "no frames matching '%s'\n", method)
+		noMatchMessage(w, sf, method)
 		return
 	}
 
@@ -181,6 +181,9 @@ func ftraceHottestPath(w io.Writer, pt *pathTree, rootKey string, minPct float64
 
 // computeTraceString returns the hottest-path trace for the given method as a string.
 func computeTraceString(sf *stackFile, method string, minPct float64, fqn bool) string {
+	if sf.totalSamples == 0 {
+		return ""
+	}
 	var buf strings.Builder
 	writeTrace(&buf, sf, method, minPct, fqn)
 	return strings.TrimRight(buf.String(), "\n")

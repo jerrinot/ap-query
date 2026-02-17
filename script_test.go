@@ -2145,8 +2145,8 @@ print(result)
 			t.Fatalf("expected exit 0, got %d", code)
 		}
 	})
-	if !strings.Contains(out, "no frames matching") {
-		t.Fatalf("expected 'no frames matching' message, got %q", out)
+	if !strings.Contains(out, "no stacks matching") {
+		t.Fatalf("expected 'no stacks matching' message, got %q", out)
 	}
 }
 
@@ -2240,8 +2240,8 @@ print(result)
 			t.Fatalf("expected exit 0, got %d", code)
 		}
 	})
-	if !strings.Contains(out, "no frames matching") {
-		t.Fatalf("expected 'no frames matching' message, got %q", out)
+	if !strings.Contains(out, "no stacks matching") {
+		t.Fatalf("expected 'no stacks matching' message, got %q", out)
 	}
 }
 
@@ -2302,8 +2302,8 @@ print(result)
 			t.Fatalf("expected exit 0, got %d", code)
 		}
 	})
-	if !strings.Contains(out, "no frames matching") {
-		t.Fatalf("expected 'no frames matching' message, got %q", out)
+	if !strings.Contains(out, "no stacks matching") {
+		t.Fatalf("expected 'no stacks matching' message, got %q", out)
 	}
 }
 

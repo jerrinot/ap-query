@@ -87,6 +87,29 @@ func (sf *stackFile) hideFrames(re *regexp.Regexp) *stackFile {
 	return out
 }
 
+// stackFileFromEvents builds a minimal stackFile from timed events for
+// suggestion purposes. It deduplicates frames upfront to avoid allocating
+// one stack per event on large recordings.
+func stackFileFromEvents(events []timedEvent) *stackFile {
+	seen := make(map[string]bool)
+	var frames []string
+	for i := range events {
+		for _, fr := range events[i].frames {
+			if !seen[fr] {
+				seen[fr] = true
+				frames = append(frames, fr)
+			}
+		}
+	}
+	if len(frames) == 0 {
+		return &stackFile{}
+	}
+	return &stackFile{
+		stacks:       []stack{{frames: frames, lines: make([]uint32, len(frames)), count: 1}},
+		totalSamples: 1,
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Frame / thread resolution
 // ---------------------------------------------------------------------------

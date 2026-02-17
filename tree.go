@@ -1,6 +1,9 @@
 package main
 
-import "os"
+import (
+	"fmt"
+	"os"
+)
 
 const treeHelp = `Usage: ap-query tree [flags] <file>
 
@@ -24,8 +27,9 @@ Examples:
 
 func cmdTree(sf *stackFile, method string, maxDepth int, minPct float64) {
 	if sf.totalSamples == 0 {
+		fmt.Fprintln(os.Stdout, "no samples (empty profile or all filtered out)")
 		return
 	}
 	pt := buildTreePT(sf, method)
-	pt.fprintTree(os.Stdout, treeDisplayMethod(method), maxDepth, minPct, true)
+	pt.fprintTree(os.Stdout, sf, treeDisplayMethod(method), maxDepth, minPct, true)
 }

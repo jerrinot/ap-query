@@ -80,10 +80,11 @@ func aggregatePaths(sf *stackFile, method string, extract func(frames []string, 
 }
 
 // fprintTree prints the aggregated path tree to w. If showSelf is true,
-// leaf nodes annotate their self-time percentage.
-func (pt *pathTree) fprintTree(w io.Writer, method string, maxDepth int, minPct float64, showSelf bool) {
+// leaf nodes annotate their self-time percentage. sf is used for no-match
+// suggestions; pass nil to skip suggestions.
+func (pt *pathTree) fprintTree(w io.Writer, sf *stackFile, method string, maxDepth int, minPct float64, showSelf bool) {
 	if len(pt.samples) == 0 {
-		fmt.Fprintf(w, "no frames matching '%s'\n", method)
+		noMatchMessage(w, sf, method)
 		return
 	}
 
@@ -193,7 +194,7 @@ func computeTreeString(sf *stackFile, method string, maxDepth int, minPct float6
 	}
 	pt := buildTreePT(sf, method)
 	var buf strings.Builder
-	pt.fprintTree(&buf, treeDisplayMethod(method), maxDepth, minPct, true)
+	pt.fprintTree(&buf, sf, treeDisplayMethod(method), maxDepth, minPct, true)
 	return strings.TrimRight(buf.String(), "\n")
 }
 
@@ -204,6 +205,6 @@ func computeCallersString(sf *stackFile, method string, maxDepth int, minPct flo
 	}
 	pt := buildCallersPT(sf, method)
 	var buf strings.Builder
-	pt.fprintTree(&buf, method, maxDepth, minPct, false)
+	pt.fprintTree(&buf, sf, method, maxDepth, minPct, false)
 	return strings.TrimRight(buf.String(), "\n")
 }

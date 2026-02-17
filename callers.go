@@ -1,6 +1,9 @@
 package main
 
-import "os"
+import (
+	"fmt"
+	"os"
+)
 
 const callersHelp = `Usage: ap-query callers [flags] <file>
 
@@ -24,8 +27,9 @@ Examples:
 
 func cmdCallers(sf *stackFile, method string, maxDepth int, minPct float64) {
 	if sf.totalSamples == 0 {
+		fmt.Fprintln(os.Stdout, "no samples (empty profile or all filtered out)")
 		return
 	}
 	pt := buildCallersPT(sf, method)
-	pt.fprintTree(os.Stdout, method, maxDepth, minPct, false)
+	pt.fprintTree(os.Stdout, sf, method, maxDepth, minPct, false)
 }

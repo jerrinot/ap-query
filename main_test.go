@@ -462,8 +462,8 @@ func TestCmdLinesNoMatch(t *testing.T) {
 		cmdLines(sf, "Nonexistent", 0, false)
 	})
 
-	if !strings.Contains(out, "no frames matching") {
-		t.Errorf("expected 'no frames matching', got %q", out)
+	if !strings.Contains(out, "no stacks matching") {
+		t.Errorf("expected 'no stacks matching', got %q", out)
 	}
 }
 
@@ -2147,8 +2147,8 @@ func TestCmdFilterNoMatch(t *testing.T) {
 		cmdFilter(sf, "Nonexistent", false)
 	})
 
-	if strings.TrimSpace(out) != "" {
-		t.Errorf("expected empty output, got %q", out)
+	if !strings.Contains(out, "no stacks matching") {
+		t.Errorf("expected 'no stacks matching', got %q", out)
 	}
 }
 
@@ -2673,8 +2673,8 @@ func TestCmdTreeNoMatch(t *testing.T) {
 		cmdTree(sf, "Nonexistent", 4, 1.0)
 	})
 
-	if !strings.Contains(out, "no frames matching") {
-		t.Errorf("expected 'no frames matching', got %q", out)
+	if !strings.Contains(out, "no stacks matching") {
+		t.Errorf("expected 'no stacks matching', got %q", out)
 	}
 }
 
@@ -2687,8 +2687,8 @@ func TestCmdCallersNoMatch(t *testing.T) {
 		cmdCallers(sf, "Nonexistent", 4, 1.0)
 	})
 
-	if !strings.Contains(out, "no frames matching") {
-		t.Errorf("expected 'no frames matching', got %q", out)
+	if !strings.Contains(out, "no stacks matching") {
+		t.Errorf("expected 'no stacks matching', got %q", out)
 	}
 }
 
@@ -2699,8 +2699,8 @@ func TestCmdTreeEmpty(t *testing.T) {
 		cmdTree(sf, "A.a", 4, 1.0)
 	})
 
-	if strings.TrimSpace(out) != "" {
-		t.Errorf("expected empty output, got %q", out)
+	if !strings.Contains(out, "no samples") {
+		t.Errorf("expected 'no samples' message, got %q", out)
 	}
 }
 
@@ -2711,8 +2711,8 @@ func TestCmdCallersEmpty(t *testing.T) {
 		cmdCallers(sf, "A.a", 4, 1.0)
 	})
 
-	if strings.TrimSpace(out) != "" {
-		t.Errorf("expected empty output, got %q", out)
+	if !strings.Contains(out, "no samples") {
+		t.Errorf("expected 'no samples' message, got %q", out)
 	}
 }
 
@@ -2761,7 +2761,7 @@ func TestPrintTreeMinPct(t *testing.T) {
 		cmdTree(sf, "A.a", 4, 5.0) // A.a is 1% of 100, below 5% threshold
 	})
 
-	if !strings.Contains(out, "no frames matching") || strings.Contains(out, "B.b") {
+	if !strings.Contains(out, "no stacks matching") || strings.Contains(out, "B.b") {
 		// aggregatePaths will find A.a but printTree will skip it due to minPct
 		// Actually the root A.a has pct=1% < 5% so it won't print
 	}
@@ -3659,9 +3659,9 @@ func TestCmdTreeNoMethod(t *testing.T) {
 		t.Errorf("expected 'E.helper' in tree output, got:\n%s", out)
 	}
 
-	// Should NOT show the "no frames matching" message
-	if strings.Contains(out, "no frames matching") {
-		t.Errorf("should not show 'no frames matching' when method is empty, got:\n%s", out)
+	// Should NOT show the "no stacks matching" message
+	if strings.Contains(out, "no stacks matching") {
+		t.Errorf("should not show 'no stacks matching' when method is empty, got:\n%s", out)
 	}
 }
 
@@ -3703,9 +3703,8 @@ func TestCmdTreeNoMethodEmpty(t *testing.T) {
 		cmdTree(sf, "", 4, 1.0)
 	})
 
-	// Empty stackfile should produce no output
-	if strings.TrimSpace(out) != "" {
-		t.Errorf("expected empty output for empty stackfile, got %q", out)
+	if !strings.Contains(out, "no samples") {
+		t.Errorf("expected 'no samples' message, got %q", out)
 	}
 }
 
@@ -3969,8 +3968,8 @@ func TestCmdTraceNoMatch(t *testing.T) {
 		cmdTrace(sf, "Nonexistent", 0.0, false)
 	})
 
-	if !strings.Contains(out, "no frames matching") {
-		t.Errorf("expected 'no frames matching', got %q", out)
+	if !strings.Contains(out, "no stacks matching") {
+		t.Errorf("expected 'no stacks matching', got %q", out)
 	}
 }
 
@@ -3981,8 +3980,8 @@ func TestCmdTraceEmpty(t *testing.T) {
 		cmdTrace(sf, "A.a", 0.0, false)
 	})
 
-	if strings.TrimSpace(out) != "" {
-		t.Errorf("expected empty output for empty stackFile, got %q", out)
+	if !strings.Contains(out, "no samples") {
+		t.Errorf("expected 'no samples' message, got %q", out)
 	}
 }
 
@@ -4873,8 +4872,8 @@ func TestCmdTreeHideRemovesMethodTarget(t *testing.T) {
 		cmdTree(hidden, "Target.run", 4, 0.0)
 	})
 
-	if !strings.Contains(out, "no frames matching") {
-		t.Errorf("expected 'no frames matching' when target is hidden, got:\n%s", out)
+	if !strings.Contains(out, "no stacks matching") {
+		t.Errorf("expected 'no stacks matching' when target is hidden, got:\n%s", out)
 	}
 }
 
@@ -4915,9 +4914,9 @@ func TestCmdTreeHideAllStacksFullyHidden(t *testing.T) {
 		cmdTree(hidden, "", 4, 0.0)
 	})
 
-	// totalSamples > 0 but no stacks → "no frames matching '(all)'"
-	if !strings.Contains(out, "no frames matching '(all)'") {
-		t.Errorf("expected \"no frames matching '(all)'\", got:\n%s", out)
+	// totalSamples > 0 but no stacks → "no stacks matching '(all)'"
+	if !strings.Contains(out, "no stacks matching '(all)'") {
+		t.Errorf("expected \"no stacks matching '(all)'\", got:\n%s", out)
 	}
 }
 
@@ -4997,8 +4996,374 @@ func TestCmdTraceHideRemovesTarget(t *testing.T) {
 		cmdTrace(hidden, "Target.run", 0.0, false)
 	})
 
-	if !strings.Contains(out, "no frames matching") {
-		t.Errorf("expected 'no frames matching' when target is hidden, got:\n%s", out)
+	if !strings.Contains(out, "no stacks matching") {
+		t.Errorf("expected 'no stacks matching' when target is hidden, got:\n%s", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestNoMatch* — suggestions, dollar hints, and edge cases
+// ---------------------------------------------------------------------------
+
+func TestNoMatchSuggestions(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"com/example/App.process", "com/example/App.run"}, lines: []uint32{0, 0}, count: 10},
+	})
+
+	// "Appp" (typo) fuzzy-matches "App" segment with edit distance 1.
+	out := captureOutput(func() {
+		cmdTree(sf, "Appp", 4, 0.0)
+	})
+
+	if !strings.Contains(out, "no stacks matching") {
+		t.Errorf("expected 'no stacks matching', got:\n%s", out)
+	}
+	if !strings.Contains(out, "similar:") {
+		t.Errorf("expected suggestions, got:\n%s", out)
+	}
+	if !strings.Contains(out, "App.process") {
+		t.Errorf("expected 'App.process' in suggestions, got:\n%s", out)
+	}
+}
+
+func TestNoMatchDollarHint(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"com/example/Server$Handler.run"}, lines: []uint32{0}, count: 10},
+	})
+
+	// Pattern doesn't contain $, but profile has $ frames → hint about inner classes.
+	out := captureOutput(func() {
+		cmdTree(sf, "Nonexistent", 4, 0.0)
+	})
+
+	if !strings.Contains(out, "no stacks matching") {
+		t.Errorf("expected 'no stacks matching', got:\n%s", out)
+	}
+	if !strings.Contains(out, "inner classes ($)") {
+		t.Errorf("expected dollar hint about inner classes, got:\n%s", out)
+	}
+}
+
+func TestNoMatchDollarInPattern(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"com/example/App.run"}, lines: []uint32{0}, count: 10},
+	})
+
+	out := captureOutput(func() {
+		cmdTree(sf, "Server$Handler", 4, 0.0)
+	})
+
+	if !strings.Contains(out, "no stacks matching") {
+		t.Errorf("expected 'no stacks matching', got:\n%s", out)
+	}
+	if !strings.Contains(out, "single quotes") {
+		t.Errorf("expected single-quotes hint, got:\n%s", out)
+	}
+}
+
+func TestFilterNoMatchMessage(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "B.b"}, lines: []uint32{0, 0}, count: 10},
+	})
+
+	out := captureOutput(func() {
+		cmdFilter(sf, "Nonexistent", false)
+	})
+
+	if !strings.Contains(out, "no stacks matching") {
+		t.Errorf("expected 'no stacks matching', got %q", out)
+	}
+}
+
+func TestNoMatchNoSuggestions(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A.a", "B.b"}, lines: []uint32{0, 0}, count: 10},
+	})
+
+	out := captureOutput(func() {
+		cmdTree(sf, "Zzzzzzz", 4, 0.0)
+	})
+
+	if !strings.Contains(out, "no stacks matching") {
+		t.Errorf("expected 'no stacks matching', got:\n%s", out)
+	}
+	if strings.Contains(out, "similar:") {
+		t.Errorf("expected no suggestions for completely unrelated pattern, got:\n%s", out)
+	}
+}
+
+func TestSuggestMethodsLimit(t *testing.T) {
+	// Build a profile with 20 methods matching "Service".
+	var stacks []stack
+	for i := 0; i < 20; i++ {
+		stacks = append(stacks, stack{
+			frames: []string{fmt.Sprintf("com/example/Service%02d.handle", i)},
+			lines:  []uint32{0},
+			count:  1,
+		})
+	}
+	sf := makeStackFile(stacks)
+
+	suggestions, _ := suggestMethods(sf, "Service")
+	if len(suggestions) > 5 {
+		t.Errorf("expected at most 5 suggestions, got %d: %v", len(suggestions), suggestions)
+	}
+}
+
+func TestSuggestMethodsCaseInsensitive(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"java/util/HashMap.resize"}, lines: []uint32{0}, count: 10},
+	})
+
+	suggestions, _ := suggestMethods(sf, "hashmap")
+	found := false
+	for _, s := range suggestions {
+		if strings.Contains(s, "HashMap") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected case-insensitive match for 'hashmap' to find HashMap, got %v", suggestions)
+	}
+}
+
+func TestSuggestMethodsTransposition(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"java/util/HashMap.resize"}, lines: []uint32{0}, count: 10},
+	})
+
+	// "rezise" is "resize" with i and s transposed (edit distance 2).
+	suggestions, _ := suggestMethods(sf, "rezise")
+	found := false
+	for _, s := range suggestions {
+		if strings.Contains(s, "resize") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected fuzzy match for 'rezise' to find HashMap.resize, got %v", suggestions)
+	}
+}
+
+func TestLevenshtein(t *testing.T) {
+	tests := []struct {
+		a, b string
+		want int
+	}{
+		{"", "", 0},
+		{"abc", "", 3},
+		{"", "abc", 3},
+		{"abc", "abc", 0},
+		{"abc", "abd", 1},
+		{"kitten", "sitting", 3},
+		{"appp", "app", 1},
+		{"rezise", "resize", 2},
+	}
+	for _, tt := range tests {
+		got := levenshtein(tt.a, tt.b)
+		if got != tt.want {
+			t.Errorf("levenshtein(%q, %q) = %d, want %d", tt.a, tt.b, got, tt.want)
+		}
+	}
+}
+
+func TestMatchesMethodSlashPattern(t *testing.T) {
+	// Patterns with / should match against dot-normalized frames.
+	if !matchesMethod("com/example/App.process", "com/example/App.process") {
+		t.Error("slash pattern should match identical slash frame")
+	}
+	if !matchesMethod("com/example/App.process", "com.example.App.process") {
+		t.Error("dot pattern should match slash frame")
+	}
+	if !matchesMethod("com/example/App.process", "App.process") {
+		t.Error("short pattern should match slash frame")
+	}
+}
+
+func TestSlashPatternTree(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"com/example/App.process", "com/example/Foo.bar"}, lines: []uint32{0, 0}, count: 10},
+	})
+
+	out := captureOutput(func() {
+		cmdTree(sf, "com/example/App.process", 4, 0.0)
+	})
+
+	if !strings.Contains(out, "App.process") {
+		t.Errorf("slash pattern should match, got:\n%s", out)
+	}
+	if strings.Contains(out, "no stacks matching") {
+		t.Errorf("slash pattern should not fail to match, got:\n%s", out)
+	}
+}
+
+func TestSlashPatternSuggestions(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"com/example/App.process", "com/example/Foo.bar"}, lines: []uint32{0, 0}, count: 10},
+	})
+
+	// FQN pattern with typo should get suggestions via full-name comparison.
+	out := captureOutput(func() {
+		cmdTree(sf, "com/example/Appp.process", 4, 0.0)
+	})
+
+	if !strings.Contains(out, "no stacks matching") {
+		t.Errorf("expected no match for typo, got:\n%s", out)
+	}
+	if !strings.Contains(out, "similar:") {
+		t.Errorf("expected suggestions for FQN typo, got:\n%s", out)
+	}
+}
+
+func TestFuzzyScoreFQNTypo(t *testing.T) {
+	// Full-name comparison should catch FQN patterns with typos.
+	score := fuzzyScore("com.example.App.process", "com.example.appp.process", 3)
+	if score < 0 || score > 1 {
+		t.Errorf("expected score 1 for single-char typo in FQN, got %d", score)
+	}
+
+	// Dotted pattern against short name with very different length should not match.
+	score = fuzzyScore("App.process", "com.example.appp.process", 3)
+	if score >= 0 {
+		t.Errorf("expected no match for length-mismatched names, got %d", score)
+	}
+
+	// Dotted pattern with typo: "HashMap.rezise" vs "HashMap.resize".
+	score = fuzzyScore("HashMap.resize", "hashmap.rezise", 3)
+	if score < 0 {
+		t.Errorf("expected match for dotted pattern typo, got %d", score)
+	}
+}
+
+func TestSuggestMethodsFQNCollision(t *testing.T) {
+	// Two distinct FQNs with the same short name: both should appear as FQN.
+	sf := makeStackFile([]stack{
+		{frames: []string{"com/foo/Service.run"}, lines: []uint32{0}, count: 5},
+		{frames: []string{"org/bar/Service.run"}, lines: []uint32{0}, count: 5},
+	})
+
+	suggestions, _ := suggestMethods(sf, "Service")
+	// Both FQN forms should appear since "Service.run" is ambiguous.
+	hasFoo := false
+	hasBar := false
+	for _, s := range suggestions {
+		if strings.Contains(s, "com.foo.Service.run") {
+			hasFoo = true
+		}
+		if strings.Contains(s, "org.bar.Service.run") {
+			hasBar = true
+		}
+	}
+	if !hasFoo || !hasBar {
+		t.Errorf("expected FQN disambiguation for collision, got %v", suggestions)
+	}
+	// Neither suggestion should be the bare short name.
+	for _, s := range suggestions {
+		if s == "Service.run" {
+			t.Errorf("expected FQN form, not short name %q, suggestions: %v", s, suggestions)
+		}
+	}
+}
+
+func TestTimelineNoMatchMethod(t *testing.T) {
+	parsed := &parsedJFR{
+		timedEvents: map[string][]timedEvent{
+			"cpu": {
+				{offsetNanos: 0, frames: []string{"A.a", "B.b"}, lines: []uint32{0, 0}, thread: "main", weight: 1},
+				{offsetNanos: 1e9, frames: []string{"A.a", "C.c"}, lines: []uint32{0, 0}, thread: "main", weight: 1},
+			},
+		},
+		spanNanos: 2e9,
+		stacksByEvent: map[string]*stackFile{
+			"cpu": makeStackFile([]stack{
+				{frames: []string{"A.a", "B.b"}, lines: []uint32{0, 0}, count: 1, thread: "main"},
+				{frames: []string{"A.a", "C.c"}, lines: []uint32{0, 0}, count: 1, thread: "main"},
+			}),
+		},
+	}
+
+	out := captureOutput(func() {
+		cmdTimeline(parsed, "cpu", 5, "", "Nonexistent", true, false, nil, "", -1, -1)
+	})
+
+	if !strings.Contains(out, "no stacks matching") {
+		t.Errorf("expected 'no stacks matching', got:\n%s", out)
+	}
+}
+
+func TestTimelineNoMatchAfterThreadFilter(t *testing.T) {
+	// Method exists in "worker" thread but not in "http" thread.
+	// After thread filter, suggestions should only show methods from filtered view.
+	parsed := &parsedJFR{
+		timedEvents: map[string][]timedEvent{
+			"cpu": {
+				{offsetNanos: 0, frames: []string{"Worker.run", "Worker.process"}, lines: []uint32{0, 0}, thread: "worker-1", weight: 1},
+				{offsetNanos: 1e9, frames: []string{"Http.handle", "Http.serve"}, lines: []uint32{0, 0}, thread: "http-1", weight: 1},
+			},
+		},
+		spanNanos: 2e9,
+		stacksByEvent: map[string]*stackFile{
+			"cpu": makeStackFile([]stack{
+				{frames: []string{"Worker.run", "Worker.process"}, lines: []uint32{0, 0}, count: 1, thread: "worker-1"},
+				{frames: []string{"Http.handle", "Http.serve"}, lines: []uint32{0, 0}, count: 1, thread: "http-1"},
+			}),
+		},
+	}
+
+	out := captureOutput(func() {
+		// Filter to "http" thread, search for "Worker" — should not suggest Worker.
+		cmdTimeline(parsed, "cpu", 5, "", "Worker", true, false, nil, "http", -1, -1)
+	})
+
+	if !strings.Contains(out, "no stacks matching") {
+		t.Errorf("expected 'no stacks matching', got:\n%s", out)
+	}
+	// Suggestions should only come from filtered events (http thread).
+	// Worker methods should not appear in the "similar:" line.
+	if strings.Contains(out, "similar:") && strings.Contains(out, "Worker") {
+		t.Errorf("should not suggest Worker methods after thread filter to 'http', got:\n%s", out)
+	}
+
+	// Positive case: typo on a method that IS in the filtered view should suggest it.
+	out2 := captureOutput(func() {
+		// Filter to "http" thread, search for "Htpp" (typo) — should suggest Http methods.
+		cmdTimeline(parsed, "cpu", 5, "", "Htpp", true, false, nil, "http", -1, -1)
+	})
+	if !strings.Contains(out2, "similar:") {
+		t.Errorf("expected suggestions from filtered events for typo 'Htpp', got:\n%s", out2)
+	}
+	if !strings.Contains(out2, "Http") {
+		t.Errorf("expected Http methods in suggestions, got:\n%s", out2)
+	}
+}
+
+func TestCmdLinesEmpty(t *testing.T) {
+	sf := makeStackFile(nil)
+
+	var err error
+	out := captureOutput(func() {
+		err = cmdLines(sf, "A.a", 0, false)
+	})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "no samples") {
+		t.Errorf("expected 'no samples' message, got %q", out)
+	}
+}
+
+func TestCmdFilterEmpty(t *testing.T) {
+	sf := makeStackFile(nil)
+
+	out := captureOutput(func() {
+		cmdFilter(sf, "A.a", false)
+	})
+
+	if !strings.Contains(out, "no samples") {
+		t.Errorf("expected 'no samples' message, got %q", out)
 	}
 }
 

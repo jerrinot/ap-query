@@ -86,6 +86,15 @@ Use `--group` with `threads` to aggregate by normalized name
 Use `--fqn` to show fully-qualified class names (e.g. `java.util.HashMap.resize` instead of
 `HashMap.resize`). Available on hot, trace, lines, and diff.
 
+## No-match feedback
+
+When `-m` matches nothing, commands print `no stacks matching '<method>'` with:
+- **Fuzzy suggestions** — similar method names from the profile (case-insensitive, up to 5).
+- **`$`-expansion hints** — warns about shell variable expansion eating `$` in inner-class names.
+
+If the profile is empty or all samples were removed by filters (`-t`, `--no-idle`, `--from`/`--to`),
+commands print `no samples (empty profile or all filtered out)` instead.
+
 ## Interpretation
 
 - **Self% ≈ Total%** → leaf method, bottleneck is the method itself.

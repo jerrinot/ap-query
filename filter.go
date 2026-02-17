@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strings"
 )
 
@@ -24,6 +25,11 @@ Examples:
 `
 
 func cmdFilter(sf *stackFile, method string, includeCallers bool) {
+	if sf.totalSamples == 0 {
+		fmt.Fprintln(os.Stdout, "no samples (empty profile or all filtered out)")
+		return
+	}
+	matched := 0
 	for i := range sf.stacks {
 		st := &sf.stacks[i]
 		for j, fr := range st.frames {
@@ -36,8 +42,12 @@ func cmdFilter(sf *stackFile, method string, includeCallers bool) {
 				}
 				tp := threadPrefix(st.thread)
 				fmt.Printf("%s%s %d\n", tp, strings.Join(outFrames, ";"), st.count)
+				matched++
 				break
 			}
 		}
+	}
+	if matched == 0 {
+		noMatchMessage(os.Stdout, sf, method)
 	}
 }
