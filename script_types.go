@@ -101,12 +101,14 @@ func (p *starlarkProfile) Attr(name string) (starlark.Value, error) {
 		return starlark.NewBuiltin("trace", p.methodTrace), nil
 	case "callers":
 		return starlark.NewBuiltin("callers", p.methodCallers), nil
+	case "no_idle":
+		return starlark.NewBuiltin("no_idle", p.methodNoIdle), nil
 	}
 	return nil, starlark.NoSuchAttrError(fmt.Sprintf("Profile has no .%s attribute", name))
 }
 
 func (p *starlarkProfile) AttrNames() []string {
-	return []string{"stacks", "samples", "duration", "event", "events", "path", "hot", "threads", "filter", "group_by", "timeline", "split", "tree", "trace", "callers"}
+	return []string{"stacks", "samples", "duration", "event", "events", "path", "hot", "threads", "filter", "group_by", "timeline", "split", "tree", "trace", "callers", "no_idle"}
 }
 
 func (p *starlarkProfile) methodHot(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
@@ -387,11 +389,13 @@ func (p *starlarkProfile) methodTimeline(_ *starlark.Thread, b *starlark.Builtin
 			samples += e.weight
 		}
 		elems[i] = &starlarkBucket{
-			startSec: float64(startNanos) / 1e9,
-			endSec:   float64(endNanos) / 1e9,
-			samples:  samples,
-			events:   bucketEvents[i],
-			parent:   p,
+			startSec:   float64(startNanos) / 1e9,
+			endSec:     float64(endNanos) / 1e9,
+			startNanos: startNanos,
+			endNanos:   endNanos,
+			samples:    samples,
+			events:     bucketEvents[i],
+			parent:     p,
 		}
 	}
 	return starlark.NewList(elems), nil
@@ -493,18 +497,31 @@ func (p *starlarkProfile) methodCallers(_ *starlark.Thread, b *starlark.Builtin,
 	return starlark.String(computeCallersString(p.sf, method, depth, minPct)), nil
 }
 
+func (p *starlarkProfile) methodNoIdle(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if err := starlark.UnpackPositionalArgs("no_idle", args, kwargs, 0); err != nil {
+		return nil, err
+	}
+	newSf := p.sf.filterIdle()
+	child := newStarlarkProfile(newSf, p.parsed, p.event, p.path)
+	child.timedParsed = p.timedParsed
+	child.scopedEvents = filterIdleEvents(p.scopedEvents)
+	return child, nil
+}
+
 // ---------------------------------------------------------------------------
 // starlarkBucket
 // ---------------------------------------------------------------------------
 
 type starlarkBucket struct {
-	startSec float64
-	endSec   float64
-	samples  int
-	events   []timedEvent
-	parent   *starlarkProfile // profile that created this bucket
-	stacks   *starlark.List   // cached
-	profile  *starlarkProfile // cached, lazy
+	startSec   float64
+	endSec     float64
+	startNanos int64
+	endNanos   int64
+	samples    int
+	events     []timedEvent
+	parent     *starlarkProfile // profile that created this bucket
+	stacks     *starlark.List   // cached
+	profile    *starlarkProfile // cached, lazy
 }
 
 func (b *starlarkBucket) String() string {
@@ -555,12 +572,17 @@ func (b *starlarkBucket) Attr(name string) (starlark.Value, error) {
 		return starlark.NewBuiltin("hot", b.methodHot), nil
 	case "profile":
 		return b.buildProfile(), nil
+	case "label":
+		width := b.endNanos - b.startNanos
+		startStr := formatTimelineTimestamp(b.startNanos, width)
+		endStr := formatTimelineTimestamp(b.endNanos, width)
+		return starlark.String(startStr + "-" + endStr), nil
 	}
 	return nil, starlark.NoSuchAttrError(fmt.Sprintf("Bucket has no .%s attribute", name))
 }
 
 func (b *starlarkBucket) AttrNames() []string {
-	return []string{"start", "end", "samples", "stacks", "hot", "profile"}
+	return []string{"start", "end", "samples", "stacks", "hot", "profile", "label"}
 }
 
 func (b *starlarkBucket) methodHot(_ *starlark.Thread, bn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {

@@ -50,6 +50,7 @@ Types:
     .tree(method="", depth=4, min_pct=1.0)   → string  Call tree from method (or root).
     .trace(method, min_pct=0.5, fqn=False)   → string  Hottest path from method.
     .callers(method, depth=4, min_pct=1.0)   → string  Callers tree toward root.
+    .no_idle()                             → Profile  Remove idle leaf frames (same as CLI --no-idle).
 
   Stack — frames[0] is root, frames[-1] is leaf
     .frames        list[Frame]
@@ -81,6 +82,7 @@ Types:
   Bucket — returned by timeline()
     .start         float — seconds    .end    float — seconds
     .samples       int                .stacks list[Stack]
+    .label         string — formatted time range (e.g. "4m20.0s-4m30.0s")
     .hot(n=5) → list[Method]
     .profile → Profile    Full Profile wrapping bucket data.
 

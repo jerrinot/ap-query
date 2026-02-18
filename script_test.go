@@ -2516,3 +2516,213 @@ print(len(buckets))
 		t.Errorf("error should mention type constraint, got: %q", stderr)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Profile.no_idle()
+// ---------------------------------------------------------------------------
+
+func TestProfileNoIdle(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"java/lang/Thread.run", "com/example/App.work"}, lines: []uint32{0, 0}, count: 10, thread: "worker-1"},
+		{frames: []string{"java/lang/Thread.run", "java/lang/Object.wait"}, lines: []uint32{0, 0}, count: 7, thread: "worker-2"},
+	})
+	p := newStarlarkProfile(sf, nil, "cpu", "test")
+
+	out := captureOutput(func() {
+		code := runScript(`
+filtered = p.no_idle()
+print(filtered.samples)
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	if strings.TrimSpace(out) != "10" {
+		t.Fatalf("expected 10 samples after no_idle, got %q", out)
+	}
+}
+
+func TestProfileNoIdleEmpty(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"java/lang/Thread.run", "java/lang/Object.wait"}, lines: []uint32{0, 0}, count: 5, thread: "t1"},
+		{frames: []string{"java/lang/Thread.run", "java/util/concurrent/locks/LockSupport.park"}, lines: []uint32{0, 0}, count: 3, thread: "t2"},
+	})
+	p := newStarlarkProfile(sf, nil, "cpu", "test")
+
+	out := captureOutput(func() {
+		code := runScript(`
+filtered = p.no_idle()
+print(filtered.samples)
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	if strings.TrimSpace(out) != "0" {
+		t.Fatalf("expected 0 samples after no_idle, got %q", out)
+	}
+}
+
+func TestProfileNoIdlePreservesOriginal(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"java/lang/Thread.run", "com/example/App.work"}, lines: []uint32{0, 0}, count: 10, thread: "worker-1"},
+		{frames: []string{"java/lang/Thread.run", "java/lang/Object.wait"}, lines: []uint32{0, 0}, count: 7, thread: "worker-2"},
+	})
+	p := newStarlarkProfile(sf, nil, "cpu", "test")
+
+	out := captureOutput(func() {
+		code := runScript(`
+_ = p.no_idle()
+print(p.samples)
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	if strings.TrimSpace(out) != "17" {
+		t.Fatalf("expected original 17, got %q", out)
+	}
+}
+
+func TestProfileNoIdleTimeline(t *testing.T) {
+	out := captureOutput(func() {
+		code := runScript(fmt.Sprintf(`
+p = open(%q)
+ni = p.no_idle()
+buckets = ni.timeline(buckets=3)
+total = 0
+for b in buckets:
+    total += b.samples
+print(total)
+print(ni.samples)
+`, scriptFixture("cpu.jfr")), "", nil, testTimeout)
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected 2 lines, got %d: %q", len(lines), out)
+	}
+	bucketTotal := strings.TrimSpace(lines[0])
+	niSamples := strings.TrimSpace(lines[1])
+	if bucketTotal != niSamples {
+		t.Fatalf("bucket total (%s) should equal no_idle samples (%s)", bucketTotal, niSamples)
+	}
+}
+
+func TestProfileNoIdleScopedEvents(t *testing.T) {
+	// Build a timed profile with both idle and non-idle events, then split()
+	// to produce a child with scopedEvents != nil. no_idle() on that child
+	// must filter both the stackFile and scopedEvents so that a subsequent
+	// timeline() excludes idle events from bucket counts.
+	sf := makeStackFile([]stack{
+		{frames: []string{"A", "B"}, lines: []uint32{0, 0}, count: 4, thread: "t1"},
+		{frames: []string{"A", "java/lang/Object.wait"}, lines: []uint32{0, 0}, count: 3, thread: "t1"},
+	})
+	events := []timedEvent{
+		{offsetNanos: 0, stackKey: "A;B", frames: []string{"A", "B"}, lines: []uint32{0, 0}, thread: "t1", weight: 2},
+		{offsetNanos: 500_000_000, stackKey: "A;java/lang/Object.wait", frames: []string{"A", "java/lang/Object.wait"}, lines: []uint32{0, 0}, thread: "t1", weight: 1},
+		{offsetNanos: 1_500_000_000, stackKey: "A;B", frames: []string{"A", "B"}, lines: []uint32{0, 0}, thread: "t1", weight: 2},
+		{offsetNanos: 2_000_000_000, stackKey: "A;java/lang/Object.wait", frames: []string{"A", "java/lang/Object.wait"}, lines: []uint32{0, 0}, thread: "t1", weight: 2},
+	}
+	timed := &parsedJFR{
+		eventCounts:   map[string]int{"cpu": 7},
+		stacksByEvent: map[string]*stackFile{"cpu": sf},
+		timedEvents:   map[string][]timedEvent{"cpu": events},
+		spanNanos:     3_000_000_000,
+	}
+	p := newStarlarkProfile(sf, timed, "cpu", "test.jfr")
+	p.timedParsed = timed
+
+	out := captureOutput(func() {
+		code := runScript(`
+# split at 1s: part0=[0,1s) has 2 non-idle + 1 idle, part1=[1s,+) has 2 non-idle + 2 idle
+parts = p.split([1.0])
+part1 = parts[1]
+# part1 has scopedEvents != nil (from split)
+ni = part1.no_idle()
+print(ni.samples)
+buckets = ni.timeline(buckets=1)
+print(buckets[0].samples)
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected 2 lines, got %d: %q", len(lines), out)
+	}
+	// part1 has events at 1.5s (B, weight=2) and 2s (Object.wait, weight=2).
+	// no_idle removes the Object.wait event → 2 samples remain.
+	if strings.TrimSpace(lines[0]) != "2" {
+		t.Fatalf("expected no_idle samples 2, got %q", lines[0])
+	}
+	if strings.TrimSpace(lines[1]) != "2" {
+		t.Fatalf("expected bucket samples 2, got %q", lines[1])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Bucket.label
+// ---------------------------------------------------------------------------
+
+func TestBucketLabel(t *testing.T) {
+	// Synthetic profile with known nanos so we can predict exact label output.
+	sf := makeStackFile([]stack{
+		{frames: []string{"A", "B"}, lines: []uint32{0, 0}, count: 5, thread: "t1"},
+	})
+	events := []timedEvent{
+		{offsetNanos: 0, stackKey: "A;B", frames: []string{"A", "B"}, lines: []uint32{0, 0}, thread: "t1", weight: 3},
+		{offsetNanos: 2_000_000_000, stackKey: "A;B", frames: []string{"A", "B"}, lines: []uint32{0, 0}, thread: "t1", weight: 2},
+	}
+	timed := &parsedJFR{
+		eventCounts:   map[string]int{"cpu": 5},
+		stacksByEvent: map[string]*stackFile{"cpu": sf},
+		timedEvents:   map[string][]timedEvent{"cpu": events},
+		spanNanos:     3_000_000_000,
+	}
+	p := newStarlarkProfile(sf, timed, "cpu", "test.jfr")
+	p.timedParsed = timed
+
+	out := captureOutput(func() {
+		code := runScript(`
+buckets = p.timeline(buckets=3)
+for b in buckets:
+    print(b.label)
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	// 3 buckets over 3s → 1s each. bucketWidth=1e9 → precision=1.
+	// formatTimelineTimestamp(0, 1e9)="0.0s", (1e9, 1e9)="1.0s", etc.
+	expected := []string{"0.0s-1.0s", "1.0s-2.0s", "2.0s-3.0s"}
+	if len(lines) != len(expected) {
+		t.Fatalf("expected %d labels, got %d: %q", len(expected), len(lines), out)
+	}
+	for i, exp := range expected {
+		got := strings.TrimSpace(lines[i])
+		if got != exp {
+			t.Fatalf("bucket %d: expected %q, got %q", i, exp, got)
+		}
+	}
+}
+
+func TestBucketLabelType(t *testing.T) {
+	out := captureOutput(func() {
+		code := runScript(fmt.Sprintf(`
+p = open(%q)
+buckets = p.timeline(buckets=5)
+print(type(buckets[0].label))
+`, scriptFixture("cpu.jfr")), "", nil, testTimeout)
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	if strings.TrimSpace(out) != "string" {
+		t.Fatalf("expected string type, got %q", out)
+	}
+}

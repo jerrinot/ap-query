@@ -107,3 +107,6 @@ For analysis that fixed commands cannot express: cross-event correlation, custom
 compound predicates, multi-file comparison, CI budget enforcement.
 
 Run `{{AP_QUERY_PATH}} script --help` for the full scripting API reference (types, functions, examples).
+
+Key scripting APIs: `Profile.no_idle()` filters idle leaf frames (scripting equivalent of `--no-idle`);
+`Bucket.label` returns the formatted time range string for timeline buckets.

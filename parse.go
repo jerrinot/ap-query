@@ -582,6 +582,22 @@ func parseJFRData(path string, stackEvents map[string]struct{}, opts parseOpts) 
 	}, nil
 }
 
+// filterIdleEvents returns timed events whose leaf frame is not idle,
+// matching filterIdle() semantics on stackFile.
+func filterIdleEvents(events []timedEvent) []timedEvent {
+	if events == nil {
+		return nil
+	}
+	var out []timedEvent
+	for i := range events {
+		if len(events[i].frames) > 0 && isIdleLeaf(events[i].frames[len(events[i].frames)-1]) {
+			continue
+		}
+		out = append(out, events[i])
+	}
+	return out
+}
+
 // ---------------------------------------------------------------------------
 // Collapsed-stack text → stackFile
 // ---------------------------------------------------------------------------
