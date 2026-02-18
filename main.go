@@ -148,7 +148,7 @@ func parseFlags(args []string) flags {
 			key := strings.TrimLeft(a, "-")
 			// Known boolean flags
 			switch key {
-			case "fqn", "include-callers", "force", "project", "claude", "codex", "stdout", "top-method", "no-top-method", "no-idle", "group":
+			case "fqn", "include-callers", "force", "project", "claude", "codex", "stdout", "top-method", "no-top-method", "no-idle", "group", "pct":
 				f.bools[key] = true
 				i++
 				continue
@@ -681,7 +681,9 @@ func main() {
 			}
 			hideRe = re
 		}
-		cmdTimeline(parsed, eventType, buckets, resolution, method, topMethod, noIdle, hideRe, thread, fromNanos, toNanos)
+		topN := f.intVal([]string{"top"}, 0)
+		pctFlag := f.boolean("pct")
+		cmdTimeline(parsed, eventType, buckets, resolution, method, topMethod, noIdle, hideRe, thread, fromNanos, toNanos, topN, pctFlag)
 
 	case "info":
 		expand := f.intVal([]string{"expand"}, 3)

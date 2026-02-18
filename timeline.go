@@ -19,6 +19,8 @@ Flags:
   --resolution DURATION        Fixed bucket width (e.g. 1s, 500ms). Overrides --buckets.
   -m METHOD, --method METHOD   Only count samples containing METHOD.
   --no-top-method              Omit per-bucket hot method annotation.
+  --top N                      Show only the N highest-sample buckets.
+  --pct                        Show method percentage per bucket (requires --method).
   --hide REGEX                 Remove matching frames before analysis.
   --event TYPE, -e TYPE        Event type (default: cpu).
   -t THREAD                    Filter to threads matching substring.
@@ -29,6 +31,8 @@ Flags:
 Examples:
   ap-query timeline profile.jfr
   ap-query timeline profile.jfr --from 12s --to 14s --resolution 500ms
+  ap-query timeline profile.jfr --top 5
+  ap-query timeline profile.jfr -m HashMap.resize --pct
 `
 
 func resolveBucketRange(fromNanos, toNanos, span int64, events []timedEvent) (bucketOrigin, bucketSpan int64) {
@@ -104,7 +108,8 @@ func computeBucketWidth(bucketSpan int64, buckets int, resolution string) (numBu
 
 func cmdTimeline(parsed *parsedJFR, eventType string,
 	buckets int, resolution string, method string, topMethod bool,
-	noIdle bool, hide *regexp.Regexp, thread string, fromNanos, toNanos int64) {
+	noIdle bool, hide *regexp.Regexp, thread string, fromNanos, toNanos int64,
+	topN int, pct bool) {
 
 	events := parsed.timedEvents[eventType]
 	bucketOrigin, bucketSpan := resolveBucketRange(fromNanos, toNanos, parsed.spanNanos, events)
@@ -193,6 +198,11 @@ func cmdTimeline(parsed *parsedJFR, eventType string,
 		matchedWeight = totalWeight
 	}
 
+	if pct && method == "" {
+		fmt.Fprintln(os.Stderr, "error: --pct requires --method")
+		os.Exit(2)
+	}
+
 	if method != "" && matchedWeight == 0 {
 		noMatchMessage(os.Stdout, stackFileFromEvents(preMethodEvents), method)
 		return
@@ -210,63 +220,141 @@ func cmdTimeline(parsed *parsedJFR, eventType string,
 		perBucket = make([]bucketData, numBuckets)
 	}
 
-	for i := range events {
-		e := &events[i]
-		var idx int
+	assignBucket := func(offsetNanos int64) int {
 		if bucketSpan == 0 {
-			idx = 0
-		} else {
-			relative := e.offsetNanos - bucketOrigin
-			idx = int(relative * int64(numBuckets) / bucketSpan)
+			return 0
 		}
+		idx := int((offsetNanos - bucketOrigin) * int64(numBuckets) / bucketSpan)
 		if idx < 0 {
 			idx = 0
 		}
 		if idx >= numBuckets {
 			idx = numBuckets - 1
 		}
+		return idx
+	}
+
+	for i := range events {
+		e := &events[i]
+		idx := assignBucket(e.offsetNanos)
 		bucketCounts[idx] += e.weight
 		if topMethod {
 			perBucket[idx].eventIdxs = append(perBucket[idx].eventIdxs, i)
 		}
 	}
 
+	// Total (pre-method-filter) counts per bucket for --pct mode.
+	var totalBucketCounts []int
+	if pct {
+		totalBucketCounts = make([]int, numBuckets)
+		for i := range preMethodEvents {
+			idx := assignBucket(preMethodEvents[i].offsetNanos)
+			totalBucketCounts[idx] += preMethodEvents[i].weight
+		}
+	}
+
+	// --top N: select highest-sample buckets.
+	var displayBuckets []int
+	if topN > 0 {
+		type idxCount struct {
+			idx, count int
+		}
+		var nonEmpty []idxCount
+		for i, c := range bucketCounts {
+			if c > 0 {
+				nonEmpty = append(nonEmpty, idxCount{i, c})
+			}
+		}
+		sort.Slice(nonEmpty, func(a, b int) bool {
+			return nonEmpty[a].count > nonEmpty[b].count
+		})
+		n := topN
+		if n > len(nonEmpty) {
+			n = len(nonEmpty)
+		}
+		displayBuckets = make([]int, n)
+		for i := 0; i < n; i++ {
+			displayBuckets[i] = nonEmpty[i].idx
+		}
+		sort.Ints(displayBuckets) // restore time order
+	}
+
 	// Print header.
 	durationStr := formatDuration(bucketSpan)
 	widthStr := formatBucketWidth(bucketWidth)
-	if method != "" {
-		fmt.Printf("Duration: %s  Buckets: %d (%s each)  Event: %s  Matched: %d/%d\n",
-			durationStr, numBuckets, widthStr, eventType, matchedWeight, totalWeight)
-	} else {
-		fmt.Printf("Duration: %s  Buckets: %d (%s each)  Event: %s  Total: %d\n",
-			durationStr, numBuckets, widthStr, eventType, matchedWeight)
+	header := fmt.Sprintf("Duration: %s  Buckets: %d (%s each)  Event: %s", durationStr, numBuckets, widthStr, eventType)
+	if topN > 0 {
+		header += fmt.Sprintf("  Top: %d", topN)
 	}
+	if method != "" {
+		header += fmt.Sprintf("  Matched: %d/%d", matchedWeight, totalWeight)
+	} else {
+		header += fmt.Sprintf("  Total: %d", matchedWeight)
+	}
+	fmt.Println(header)
 	fmt.Println()
 
-	// Compute peak threshold (>2x median).
+	// Compute peak threshold (>2x median) from ALL buckets.
 	sortedCounts := make([]int, numBuckets)
 	copy(sortedCounts, bucketCounts)
 	sort.Ints(sortedCounts)
 	median := sortedCounts[numBuckets/2]
 	peakThreshold := median * 2
 
-	// Find max for bar scaling.
+	// Find max for bar scaling from displayed buckets only.
 	maxCount := 0
-	for _, c := range bucketCounts {
-		if c > maxCount {
-			maxCount = c
+	maxPct := 0.0
+	if displayBuckets != nil {
+		for _, i := range displayBuckets {
+			if bucketCounts[i] > maxCount {
+				maxCount = bucketCounts[i]
+			}
+			if pct && totalBucketCounts[i] > 0 {
+				p := 100.0 * float64(bucketCounts[i]) / float64(totalBucketCounts[i])
+				if p > maxPct {
+					maxPct = p
+				}
+			}
+		}
+	} else {
+		for i := 0; i < numBuckets; i++ {
+			if bucketCounts[i] > maxCount {
+				maxCount = bucketCounts[i]
+			}
+			if pct && totalBucketCounts[i] > 0 {
+				p := 100.0 * float64(bucketCounts[i]) / float64(totalBucketCounts[i])
+				if p > maxPct {
+					maxPct = p
+				}
+			}
 		}
 	}
 
 	// Print column header.
+	valueCol := "Samples"
+	if pct {
+		valueCol = "    Pct"
+	}
 	if topMethod {
-		fmt.Printf("%-17s %7s  %-40s  %s\n", "Time", "Samples", "", "Hot Method (self)")
+		fmt.Printf("%-17s %7s  %-40s  %s\n", "Time", valueCol, "", "Hot Method (self)")
 	} else {
-		fmt.Printf("%-17s %7s\n", "Time", "Samples")
+		fmt.Printf("%-17s %7s\n", "Time", valueCol)
 	}
 
 	const barWidth = 40
-	for i := 0; i < numBuckets; i++ {
+
+	// Build iteration list.
+	var iterBuckets []int
+	if displayBuckets != nil {
+		iterBuckets = displayBuckets
+	} else {
+		iterBuckets = make([]int, numBuckets)
+		for i := range iterBuckets {
+			iterBuckets[i] = i
+		}
+	}
+
+	for _, i := range iterBuckets {
 		start := bucketOrigin + int64(i)*bucketWidth
 		end := start + bucketWidth
 
@@ -276,10 +364,29 @@ func cmdTimeline(parsed *parsedJFR, eventType string,
 
 		count := bucketCounts[i]
 
+		// Value column (count or percentage).
+		var valueStr string
+		var barFraction float64
+		if pct {
+			var pctVal float64
+			if totalBucketCounts[i] > 0 {
+				pctVal = 100.0 * float64(count) / float64(totalBucketCounts[i])
+			}
+			valueStr = fmt.Sprintf("%5.1f%%", pctVal)
+			if maxPct > 0 {
+				barFraction = pctVal / maxPct
+			}
+		} else {
+			valueStr = fmt.Sprintf("%7d", count)
+			if maxCount > 0 {
+				barFraction = float64(count) / float64(maxCount)
+			}
+		}
+
 		// Bar.
-		barLen := 0
-		if maxCount > 0 {
-			barLen = count * barWidth / maxCount
+		barLen := int(barFraction * barWidth)
+		if barLen > barWidth {
+			barLen = barWidth
 		}
 		bar := strings.Repeat("\u2588", barLen)
 
@@ -309,15 +416,15 @@ func cmdTimeline(parsed *parsedJFR, eventType string,
 				}
 			}
 			if topName != "" && topCount > 0 {
-				pct := pctOf(topCount, count)
-				topMethodStr = fmt.Sprintf("  %s (%.0f%%)", topName, pct)
+				methodPct := pctOf(topCount, count)
+				topMethodStr = fmt.Sprintf("  %s (%.0f%%)", topName, methodPct)
 			}
 		}
 
 		if topMethod {
-			fmt.Printf("%-17s %7d  %-40s%s%s\n", timeLabel, count, bar, topMethodStr, peak)
+			fmt.Printf("%-17s %s  %-40s%s%s\n", timeLabel, valueStr, bar, topMethodStr, peak)
 		} else {
-			fmt.Printf("%-17s %7d  %s%s\n", timeLabel, count, bar, peak)
+			fmt.Printf("%-17s %s  %s%s\n", timeLabel, valueStr, bar, peak)
 		}
 	}
 }

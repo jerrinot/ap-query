@@ -5285,7 +5285,7 @@ func TestTimelineNoMatchMethod(t *testing.T) {
 	}
 
 	out := captureOutput(func() {
-		cmdTimeline(parsed, "cpu", 5, "", "Nonexistent", true, false, nil, "", -1, -1)
+		cmdTimeline(parsed, "cpu", 5, "", "Nonexistent", true, false, nil, "", -1, -1, 0, false)
 	})
 
 	if !strings.Contains(out, "no stacks matching") {
@@ -5314,7 +5314,7 @@ func TestTimelineNoMatchAfterThreadFilter(t *testing.T) {
 
 	out := captureOutput(func() {
 		// Filter to "http" thread, search for "Worker" — should not suggest Worker.
-		cmdTimeline(parsed, "cpu", 5, "", "Worker", true, false, nil, "http", -1, -1)
+		cmdTimeline(parsed, "cpu", 5, "", "Worker", true, false, nil, "http", -1, -1, 0, false)
 	})
 
 	if !strings.Contains(out, "no stacks matching") {
@@ -5329,7 +5329,7 @@ func TestTimelineNoMatchAfterThreadFilter(t *testing.T) {
 	// Positive case: typo on a method that IS in the filtered view should suggest it.
 	out2 := captureOutput(func() {
 		// Filter to "http" thread, search for "Htpp" (typo) — should suggest Http methods.
-		cmdTimeline(parsed, "cpu", 5, "", "Htpp", true, false, nil, "http", -1, -1)
+		cmdTimeline(parsed, "cpu", 5, "", "Htpp", true, false, nil, "http", -1, -1, 0, false)
 	})
 	if !strings.Contains(out2, "similar:") {
 		t.Errorf("expected suggestions from filtered events for typo 'Htpp', got:\n%s", out2)
@@ -5765,7 +5765,7 @@ func TestCmdTimeline(t *testing.T) {
 		t.Fatalf("parseJFRData: %v", err)
 	}
 	out := captureOutput(func() {
-		cmdTimeline(parsed, "cpu", 5, "", "", false, false, nil, "", -1, -1)
+		cmdTimeline(parsed, "cpu", 5, "", "", false, false, nil, "", -1, -1, 0, false)
 	})
 	if !strings.Contains(out, "Duration:") {
 		t.Error("expected Duration in header")
@@ -5803,7 +5803,7 @@ func TestCmdTimelineMethod(t *testing.T) {
 		t.Fatalf("parseJFRData: %v", err)
 	}
 	out := captureOutput(func() {
-		cmdTimeline(parsed, "cpu", 5, "", "Workload", false, false, nil, "", -1, -1)
+		cmdTimeline(parsed, "cpu", 5, "", "Workload", false, false, nil, "", -1, -1, 0, false)
 	})
 	if !strings.Contains(out, "Matched:") {
 		t.Errorf("expected 'Matched:' in header with --method, got %q", out)
@@ -5820,7 +5820,7 @@ func TestCmdTimelineTopMethod(t *testing.T) {
 		t.Fatalf("parseJFRData: %v", err)
 	}
 	out := captureOutput(func() {
-		cmdTimeline(parsed, "cpu", 5, "", "", true, false, nil, "", -1, -1)
+		cmdTimeline(parsed, "cpu", 5, "", "", true, false, nil, "", -1, -1, 0, false)
 	})
 	if !strings.Contains(out, "Hot Method (self)") {
 		t.Error("expected 'Hot Method (self)' column header")
@@ -5849,7 +5849,7 @@ func TestCmdTimelineTopMethodAggregatesLeafSelfCounts(t *testing.T) {
 		spanNanos: 1_000_000_000,
 	}
 	out := captureOutput(func() {
-		cmdTimeline(parsed, "cpu", 1, "", "", true, false, nil, "", -1, -1)
+		cmdTimeline(parsed, "cpu", 1, "", "", true, false, nil, "", -1, -1, 0, false)
 	})
 
 	// X=6, Y=8, total=14 => Y is top at 57%.
@@ -5875,7 +5875,7 @@ func TestCmdTimelineHide(t *testing.T) {
 	}
 	hide := regexp.MustCompile("^X$")
 	out := captureOutput(func() {
-		cmdTimeline(parsed, "cpu", 1, "", "", true, false, hide, "", -1, -1)
+		cmdTimeline(parsed, "cpu", 1, "", "", true, false, hide, "", -1, -1, 0, false)
 	})
 
 	// X must not appear as hot method.
@@ -5897,7 +5897,7 @@ func TestCmdTimelineZeroSpan(t *testing.T) {
 		spanNanos: 0,
 	}
 	out := captureOutput(func() {
-		cmdTimeline(parsed, "cpu", 0, "", "", false, false, nil, "", -1, -1)
+		cmdTimeline(parsed, "cpu", 0, "", "", false, false, nil, "", -1, -1, 0, false)
 	})
 	if !strings.Contains(out, "Buckets: 1") {
 		t.Errorf("expected 1 bucket for zero-span, got %q", out)
@@ -5930,7 +5930,7 @@ func TestCmdTimelineResolution(t *testing.T) {
 		t.Fatalf("parseJFRData: %v", err)
 	}
 	out := captureOutput(func() {
-		cmdTimeline(parsed, "cpu", 0, "1s", "", false, false, nil, "", -1, -1)
+		cmdTimeline(parsed, "cpu", 0, "1s", "", false, false, nil, "", -1, -1, 0, false)
 	})
 	if !strings.Contains(out, "1.0s each") {
 		t.Errorf("expected '1.0s each' in header, got %q", out)
@@ -5948,7 +5948,7 @@ func TestCmdTimelineFromTo(t *testing.T) {
 	}
 	out := captureOutput(func() {
 		cmdTimeline(parsed, "cpu", 5, "", "", false, false, nil, "",
-			1_000_000_000, 3_000_000_000)
+			1_000_000_000, 3_000_000_000, 0, false)
 	})
 	// Duration header should show the window span (2s), not full recording.
 	if !strings.Contains(out, "Duration: 2.0s") {
@@ -5974,7 +5974,7 @@ func TestCmdTimelineFromOnly(t *testing.T) {
 	}
 	out := captureOutput(func() {
 		cmdTimeline(parsed, "cpu", 5, "", "", false, false, nil, "",
-			1_000_000_000, -1)
+			1_000_000_000, -1, 0, false)
 	})
 	// Bucket origin should start at 1s.
 	if !strings.Contains(out, "1.0s-") {
@@ -6211,7 +6211,7 @@ func TestTimelineFromBeyondSpanClampsToZero(t *testing.T) {
 	}
 	out := captureOutput(func() {
 		cmdTimeline(parsed, "cpu", 0, "", "", false, false, nil, "",
-			100_000_000_000, -1)
+			100_000_000_000, -1, 0, false)
 	})
 	// Should produce a single bucket (zero span), not negative span confusion.
 	if !strings.Contains(out, "Buckets: 1") {
@@ -6240,7 +6240,7 @@ func TestTimelineFromToBothBeyondSpan(t *testing.T) {
 	}
 	out := captureOutput(func() {
 		cmdTimeline(parsed, "cpu", 0, "", "", false, false, nil, "",
-			fromNanos, toNanos)
+			fromNanos, toNanos, 0, false)
 	})
 	if !strings.Contains(out, "Buckets: 1") {
 		t.Errorf("expected 1 bucket for both-beyond-span, got %q", out)
@@ -6265,7 +6265,7 @@ func TestCmdTimelineSubSecondResolutionLabels(t *testing.T) {
 
 	out := captureOutput(func() {
 		cmdTimeline(parsed, "cpu", 0, "1ms", "", false, false, nil, "",
-			284_000_000_000, 284_003_000_000)
+			284_000_000_000, 284_003_000_000, 0, false)
 	})
 
 	if !strings.Contains(out, "Buckets: 3 (1ms each)") {
@@ -6673,5 +6673,185 @@ func TestNoIdleHintBelowThreshold(t *testing.T) {
 	_, _, stderr := runCLIForTest(t, []string{"hot", "--event", "wall", "-"}, input)
 	if strings.Contains(stderr, "Hint:") {
 		t.Errorf("no hint expected when idle <50%%, got stderr:\n%s", stderr)
+	}
+}
+
+func TestCmdTimelineTop(t *testing.T) {
+	parsed, err := parseJFRData(jfrFixture("cpu.jfr"), allJFREventTypes(), parseOpts{
+		collectTimestamps: true,
+		fromNanos:         -1,
+		toNanos:           -1,
+	})
+	if err != nil {
+		t.Fatalf("parseJFRData: %v", err)
+	}
+	out := captureOutput(func() {
+		cmdTimeline(parsed, "cpu", 10, "", "", false, false, nil, "", -1, -1, 3, false)
+	})
+	if !strings.Contains(out, "Top: 3") {
+		t.Errorf("expected 'Top: 3' in header, got:\n%s", out)
+	}
+	// Count data lines (lines with bars).
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	dataLines := 0
+	for _, line := range lines {
+		if strings.Contains(line, "s-") && strings.Contains(line, "\u2588") {
+			dataLines++
+		}
+	}
+	if dataLines != 3 {
+		t.Errorf("expected 3 data lines with bars, got %d\nOutput:\n%s", dataLines, out)
+	}
+	// Verify time order: extract timestamps and confirm non-decreasing.
+	var timestamps []string
+	for _, line := range lines {
+		if strings.Contains(line, "s-") && strings.Contains(line, "\u2588") {
+			timestamps = append(timestamps, strings.Fields(line)[0])
+		}
+	}
+	for i := 1; i < len(timestamps); i++ {
+		if timestamps[i] < timestamps[i-1] {
+			t.Errorf("timestamps not in order: %v", timestamps)
+			break
+		}
+	}
+}
+
+func TestCmdTimelineTopExceedsBuckets(t *testing.T) {
+	parsed, err := parseJFRData(jfrFixture("cpu.jfr"), allJFREventTypes(), parseOpts{
+		collectTimestamps: true,
+		fromNanos:         -1,
+		toNanos:           -1,
+	})
+	if err != nil {
+		t.Fatalf("parseJFRData: %v", err)
+	}
+	// --top 100 with only 5 buckets: should show all non-empty buckets.
+	out := captureOutput(func() {
+		cmdTimeline(parsed, "cpu", 5, "", "", false, false, nil, "", -1, -1, 100, false)
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	dataLines := 0
+	for _, line := range lines {
+		if strings.Contains(line, "s-") && strings.Contains(line, "\u2588") {
+			dataLines++
+		}
+	}
+	// All 5 buckets should have data in cpu.jfr, so all should show.
+	if dataLines < 3 {
+		t.Errorf("expected most buckets to show, got %d data lines\nOutput:\n%s", dataLines, out)
+	}
+	if dataLines > 5 {
+		t.Errorf("expected at most 5 data lines, got %d", dataLines)
+	}
+}
+
+func TestCmdTimelinePct(t *testing.T) {
+	parsed, err := parseJFRData(jfrFixture("cpu.jfr"), allJFREventTypes(), parseOpts{
+		collectTimestamps: true,
+		fromNanos:         -1,
+		toNanos:           -1,
+	})
+	if err != nil {
+		t.Fatalf("parseJFRData: %v", err)
+	}
+	out := captureOutput(func() {
+		cmdTimeline(parsed, "cpu", 5, "", "Workload", false, false, nil, "", -1, -1, 0, true)
+	})
+	if !strings.Contains(out, "Pct") {
+		t.Errorf("expected 'Pct' column header, got:\n%s", out)
+	}
+	if strings.Contains(out, "Samples") {
+		t.Errorf("expected no 'Samples' column header in pct mode, got:\n%s", out)
+	}
+	// Verify percentage values are present.
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	foundPct := false
+	for _, line := range lines {
+		if strings.Contains(line, "s-") && strings.Contains(line, "%") {
+			foundPct = true
+			break
+		}
+	}
+	if !foundPct {
+		t.Errorf("expected percentage values in output, got:\n%s", out)
+	}
+}
+
+func TestCmdTimelinePctEmptyBucket(t *testing.T) {
+	parsed, err := parseJFRData(jfrFixture("cpu.jfr"), allJFREventTypes(), parseOpts{
+		collectTimestamps: true,
+		fromNanos:         -1,
+		toNanos:           -1,
+	})
+	if err != nil {
+		t.Fatalf("parseJFRData: %v", err)
+	}
+	// Use a method that won't match in all buckets + many buckets to ensure some are empty.
+	out := captureOutput(func() {
+		cmdTimeline(parsed, "cpu", 40, "", "Workload", false, false, nil, "", -1, -1, 0, true)
+	})
+	// Should not panic or produce NaN/Inf. All percentage values should be valid.
+	if strings.Contains(out, "NaN") || strings.Contains(out, "Inf") {
+		t.Errorf("unexpected NaN/Inf in output:\n%s", out)
+	}
+	// Empty buckets (where method has 0 matches) should show 0.0%.
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	for _, line := range lines {
+		if strings.Contains(line, "s-") && strings.Contains(line, "0.0%") {
+			return // found at least one 0.0% bucket
+		}
+	}
+	// It's okay if all buckets have some matches with 40 buckets; just verify no errors.
+}
+
+func TestCmdTimelinePctRequiresMethod(t *testing.T) {
+	path := jfrFixture("cpu.jfr")
+	exitCode, _, stderr := runCLIForTest(t, []string{"timeline", path, "--pct"}, nil)
+	if exitCode != 2 {
+		t.Errorf("expected exit code 2, got %d", exitCode)
+	}
+	if !strings.Contains(stderr, "--pct requires --method") {
+		t.Errorf("expected '--pct requires --method' in stderr, got:\n%s", stderr)
+	}
+}
+
+func TestCmdTimelinePctFlagBeforeFile(t *testing.T) {
+	// --pct before the file must not swallow the file path as a flag value.
+	path := jfrFixture("cpu.jfr")
+	exitCode, _, stderr := runCLIForTest(t, []string{"timeline", "--pct", "--method", "Workload", path}, nil)
+	if exitCode != 0 {
+		t.Errorf("expected exit code 0, got %d; stderr:\n%s", exitCode, stderr)
+	}
+}
+
+func TestCmdTimelineTopWithPct(t *testing.T) {
+	parsed, err := parseJFRData(jfrFixture("cpu.jfr"), allJFREventTypes(), parseOpts{
+		collectTimestamps: true,
+		fromNanos:         -1,
+		toNanos:           -1,
+	})
+	if err != nil {
+		t.Fatalf("parseJFRData: %v", err)
+	}
+	out := captureOutput(func() {
+		cmdTimeline(parsed, "cpu", 10, "", "Workload", false, false, nil, "", -1, -1, 3, true)
+	})
+	if !strings.Contains(out, "Top: 3") {
+		t.Errorf("expected 'Top: 3' in header, got:\n%s", out)
+	}
+	if !strings.Contains(out, "Pct") {
+		t.Errorf("expected 'Pct' column header, got:\n%s", out)
+	}
+	// Count data lines: should be exactly 3.
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	dataLines := 0
+	for _, line := range lines {
+		if strings.Contains(line, "s-") && strings.Contains(line, "%") {
+			dataLines++
+		}
+	}
+	if dataLines != 3 {
+		t.Errorf("expected 3 data lines, got %d\nOutput:\n%s", dataLines, out)
 	}
 }

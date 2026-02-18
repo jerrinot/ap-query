@@ -39,6 +39,7 @@ Use `{{ASPROF_PATH}}` to record profiles. Common invocations:
 7. **Compare**: `{{AP_QUERY_PATH}} diff before.jfr after.jfr --min-delta 0.5` — REGRESSION/IMPROVEMENT/NEW/GONE.
 8. **Timeline**: `{{AP_QUERY_PATH}} timeline profile.jfr` — sample distribution over time.
    Use `--from 12s --to 14s` with any command to zoom into a time window.
+   Use `--top 5` to show only the highest-sample buckets; `-m METHOD --pct` for relative percentages.
 9. **CI gate**: `{{AP_QUERY_PATH}} hot profile.jfr --assert-below 15.0` — exits 1 if top method >= threshold.
 10. **Export**: `{{AP_QUERY_PATH}} collapse profile.jfr` — emit collapsed-stack text for external tools.
 11. **Filter**: `{{AP_QUERY_PATH}} filter profile.jfr -m HashMap.resize` — output only stacks passing through a method.
@@ -70,6 +71,8 @@ Combine with `timeline` to first identify spikes, then zoom in with `--from`/`--
 - `--resolution DURATION` — fixed bucket width (e.g. `1s`, `500ms`). Overrides `--buckets`.
 - `-m METHOD` / `--method METHOD` — only count samples where the stack contains METHOD.
 - `--no-top-method` — omit per-bucket hot method (by self time) annotation (shown by default).
+- `--top N` — show only the N highest-sample buckets (in time order).
+- `--pct` — show method's percentage of each bucket's total (requires `--method`).
 - Time labels automatically increase precision for sub-second buckets (for example, `4m44.000s-4m44.001s` at `--resolution 1ms`).
 
 ## Threads
