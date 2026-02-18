@@ -3,26 +3,43 @@ package main
 import (
 	"fmt"
 	"strings"
+
+	"github.com/spf13/cobra"
 )
 
-const infoHelp = `Usage: ap-query info [flags] <file>
-
-One-shot triage: events, threads, hot methods, and drill-down.
-
-Flags:
-  --expand N              Auto-expand top N hot methods (default: 3, 0=off).
-  --top-threads N         Threads shown (default: 10, 0=all).
-  --top-methods N         Hot methods shown (default: 20, 0=all).
-  --event TYPE, -e TYPE   Event type (default: cpu).
-  -t THREAD               Filter to threads matching substring.
-  --from DURATION         Start of time window (JFR only).
-  --to DURATION           End of time window (JFR only).
-  --no-idle               Remove idle leaf frames.
-
-Examples:
-  ap-query info profile.jfr
-  ap-query info profile.jfr --expand 0 --top-methods 10
-`
+func newInfoCmd() *cobra.Command {
+	var shared sharedFlags
+	var expand int
+	var topThreads int
+	var topMethods int
+	cmd := &cobra.Command{
+		Use:   "info <file>",
+		Short: "One-shot triage: events, threads, hot methods, and drill-down",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			pctx, err := preprocessProfile(shared.toOpts(args[0], "info"))
+			if err != nil {
+				return err
+			}
+			cmdInfo(pctx.sf, infoOpts{
+				eventType:     pctx.eventType,
+				isJFR:         pctx.isJFR,
+				eventCounts:   pctx.eventCounts,
+				expand:        expand,
+				topThreads:    topThreads,
+				topMethods:    topMethods,
+				spanNanos:     pctx.spanNanos,
+				stacksByEvent: pctx.stacksByEvent,
+			})
+			return nil
+		},
+	}
+	shared.register(cmd)
+	cmd.Flags().IntVar(&expand, "expand", 3, "Auto-expand top N hot methods (0=off)")
+	cmd.Flags().IntVar(&topThreads, "top-threads", 10, "Threads shown (0=all)")
+	cmd.Flags().IntVar(&topMethods, "top-methods", 20, "Hot methods shown (0=all)")
+	return cmd
+}
 
 type infoOpts struct {
 	eventType     string

@@ -22,445 +22,85 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
+
+	"github.com/spf13/cobra"
 )
 
 var version = "dev"
 
 // ---------------------------------------------------------------------------
-// CLI
+// Shared preprocessing
 // ---------------------------------------------------------------------------
 
-func usage() {
-	fmt.Fprintf(os.Stderr, `ap-query: analyze async-profiler profiles (JFR or collapsed text)
-
-Usage:
-  ap-query <command> [flags] <file>
-
-Input auto-detection:
-  .jfr / .jfr.gz  →  JFR binary (supports --event selection)
-  everything else  →  collapsed-stack text (one "frames count" per line)
-  -                →  collapsed text from stdin
-
-Commands:
-  info      One-shot triage: events, threads, hot methods, and drill-down.
-  hot       Rank methods by self-time and total-time.
-  timeline  Sample distribution over time (JFR only).
-  tree      Call tree descending from a method (optional -m; shows all if omitted).
-  trace     Hottest path from a method to leaf (-m required).
-  callers   Callers ascending to a method (-m required).
-  lines     Source-line breakdown inside a method (-m required).
-  threads   Thread sample distribution.
-  diff      Compare two profiles: shows REGRESSION / IMPROVEMENT / NEW / GONE.
-  collapse  Emit collapsed-stack text (useful for piping JFR output).
-  filter    Output stacks passing through a method (-m required).
-  events    List event types in a JFR file (JFR only).
-  script    Starlark scripting for custom analysis. Run 'script --help' for API reference.
-  version   Print version and check for updates.
-  update    Download and install the latest release.
-  init      Install agent skill for JFR profiling analysis.
-
-Global flags:
-  --event TYPE, -e TYPE   Event type override: cpu, wall, alloc, lock. JFR only.
-  -t THREAD               Filter stacks to threads matching substring.
-  --from DURATION          Start of time window (relative to recording start). JFR only.
-  --to DURATION            End of time window (relative to recording start). JFR only.
-
-Command-specific flags:
-  -m METHOD, --method METHOD   Substring match against method names.
-  --top N                      Limit output rows (default: 10 for hot; unlimited for diff, lines, threads).
-  --depth N                    Max tree/callers depth (default: 4).
-  --min-pct F                  Hide tree/callers/trace nodes below this %% (default: 1.0; trace default: 0.5).
-  --min-delta F                Hide diff entries below this %% change (default: 0.5).
-  --fqn                        Show fully-qualified names instead of Class.method.
-  --assert-below F             Exit 1 if top method self%% >= F (for CI gates).
-  --expand N                   Auto-expand top N hot methods in info (default: 3, 0=off).
-  --top-threads N              Threads shown in info (default: 10, 0=all).
-  --top-methods N              Hot methods shown in info (default: 20, 0=all).
-  --hide REGEX                 Remove frames matching regex from stacks before analysis (tree, trace, callers, timeline).
-  --include-callers            Include caller frames in filter output.
-  --buckets N                  Number of time buckets for timeline (default: auto ~20).
-  --resolution DURATION        Fixed bucket width for timeline (e.g. 1s, 500ms). Overrides --buckets.
-  --no-top-method              Omit per-bucket top method annotation from timeline (shown by default).
-  --no-idle                    Remove stacks with idle leaf frames (futex, sched_yield, epoll_wait, sleep, park).
-  --group                      Group threads by normalized name (threads command only).
-
-Examples:
-  ap-query info profile.jfr
-  ap-query hot profile.jfr --event cpu --top 20
-  ap-query timeline profile.jfr
-  ap-query timeline profile.jfr --from 12s --to 14s --method Workload
-  ap-query hot profile.jfr --from 5s --to 10s
-  ap-query tree profile.jfr -m HashMap.resize --depth 6
-  ap-query trace profile.jfr -m HashMap.resize --min-pct 0.5
-  ap-query callers profile.jfr -m HashMap.resize
-  ap-query lines profile.jfr -m HashMap.resize
-  ap-query hot profile.jfr -t "http-nio" --assert-below 15.0
-  ap-query tree profile.jfr --hide "Thread\.(run|start)" --depth 6
-  ap-query diff before.jfr after.jfr --min-delta 0.5
-  ap-query collapse profile.jfr --event wall | ap-query hot -
-  echo "A;B;C 10" | ap-query hot -
-
-Run 'ap-query <command> --help' for command-specific help.
-`)
-	os.Exit(2)
+type profileContext struct {
+	sf            *stackFile
+	parsed        *parsedJFR // nil for collapsed input
+	isJFR         bool
+	eventType     string
+	eventExplicit bool
+	eventCounts   map[string]int
+	eventReason   eventSelectionReason
+	fromNanos     int64
+	toNanos       int64
+	spanNanos     int64
+	stacksByEvent map[string]*stackFile // for info cross-event summary
 }
 
-var commandHelp = map[string]string{
-	"hot":      hotHelp,
-	"tree":     treeHelp,
-	"trace":    traceHelp,
-	"callers":  callersHelp,
-	"threads":  threadsHelp,
-	"filter":   filterHelp,
-	"events":   eventsHelp,
-	"collapse": collapseHelp,
-	"diff":     diffHelp,
-	"lines":    linesHelp,
-	"info":     infoHelp,
-	"timeline": timelineHelp,
-}
-
-// ---------------------------------------------------------------------------
-// Flag parser
-// ---------------------------------------------------------------------------
-
-type flags struct {
-	args  []string // positional
-	vals  map[string]string
-	bools map[string]bool
-}
-
-func parseFlags(args []string) flags {
-	f := flags{vals: make(map[string]string), bools: make(map[string]bool)}
-	i := 0
-	for i < len(args) {
-		a := args[i]
-		if a == "--" {
-			f.args = append(f.args, args[i+1:]...)
-			break
-		}
-		if strings.HasPrefix(a, "--") || (strings.HasPrefix(a, "-") && len(a) == 2) {
-			key := strings.TrimLeft(a, "-")
-			// Known boolean flags
-			switch key {
-			case "fqn", "include-callers", "force", "project", "claude", "codex", "stdout", "top-method", "no-top-method", "no-idle", "group", "pct":
-				f.bools[key] = true
-				i++
-				continue
-			}
-			// Value flags
-			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
-				f.vals[key] = args[i+1]
-				i += 2
-				continue
-			}
-			// Flag with no value — treat as boolean
-			f.bools[key] = true
-			i++
-			continue
-		}
-		f.args = append(f.args, a)
-		i++
-	}
-	return f
-}
-
-func (f *flags) str(keys ...string) string {
-	for _, k := range keys {
-		if v, ok := f.vals[k]; ok {
-			return v
-		}
-	}
-	return ""
-}
-
-func (f *flags) intVal(keys []string, def int) int {
-	for _, k := range keys {
-		if v, ok := f.vals[k]; ok {
-			n, err := strconv.Atoi(v)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "error: invalid integer value for --%s: %q\n", k, v)
-				os.Exit(2)
-			}
-			return n
-		}
-	}
-	return def
-}
-
-func (f *flags) floatVal(keys []string, def float64) float64 {
-	for _, k := range keys {
-		if v, ok := f.vals[k]; ok {
-			n, err := strconv.ParseFloat(v, 64)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "error: invalid numeric value for --%s: %q\n", k, v)
-				os.Exit(2)
-			}
-			return n
-		}
-	}
-	return def
-}
-
-func (f *flags) boolean(keys ...string) bool {
-	for _, k := range keys {
-		if f.bools[k] {
-			return true
-		}
-	}
-	return false
-}
-
-type timeRange struct {
-	fromNanos int64
-	toNanos   int64
+type preprocessOpts struct {
+	eventFlag string
+	thread    string
 	fromStr   string
-	needTimed bool
+	toStr     string
+	noIdle    bool
+	path      string
+	command   string
 }
 
-func parseTimeRangeFlags(f *flags, cmd string) timeRange {
-	fromStr := f.str("from")
-	toStr := f.str("to")
-	hasFrom := fromStr != "" || f.bools["from"]
-	hasTo := toStr != "" || f.bools["to"]
-
-	if hasFrom || hasTo {
-		if cmd == "diff" {
-			fmt.Fprintln(os.Stderr, "error: --from/--to not supported with diff")
-			os.Exit(2)
-		}
-	}
-
-	tr := timeRange{fromNanos: -1, toNanos: -1, fromStr: fromStr}
-	if hasFrom || hasTo {
-		if f.bools["from"] && fromStr == "" {
-			fmt.Fprintln(os.Stderr, "error: --from requires a duration value (e.g. --from 12s)")
-			os.Exit(2)
-		}
-		if f.bools["to"] && toStr == "" {
-			fmt.Fprintln(os.Stderr, "error: --to requires a duration value (e.g. --to 14s)")
-			os.Exit(2)
-		}
-		if fromStr != "" {
-			d, err := time.ParseDuration(fromStr)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "error: invalid --from value %q: %v\n", fromStr, err)
-				os.Exit(2)
-			}
-			tr.fromNanos = d.Nanoseconds()
-		}
-		if toStr != "" {
-			d, err := time.ParseDuration(toStr)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "error: invalid --to value %q: %v\n", toStr, err)
-				os.Exit(2)
-			}
-			tr.toNanos = d.Nanoseconds()
-		}
-		if tr.fromNanos >= 0 && tr.toNanos >= 0 && tr.toNanos < tr.fromNanos {
-			fmt.Fprintln(os.Stderr, "error: --to must be >= --from")
-			os.Exit(2)
-		}
-		tr.needTimed = true
-	}
-	return tr
-}
-
-func handleDiffCommand(f *flags, eventType string, eventExplicit bool) {
-	if len(f.args) < 2 {
-		fmt.Fprintln(os.Stderr, "error: diff requires two files")
-		os.Exit(2)
-	}
-	beforePath := f.args[0]
-	afterPath := f.args[1]
-	thread := f.str("t", "thread")
-	fqn := f.boolean("fqn")
-	minDelta := f.floatVal([]string{"min-delta"}, 0.5)
-
-	eventsToParse := allJFREventTypes()
-	if eventExplicit {
-		eventsToParse = singleJFREventType(eventType)
-	}
-
-	var beforeEventCounts map[string]int
-	var beforeStacksByEvent map[string]*stackFile
-	if isJFRPath(beforePath) {
-		parsed, err := parseJFRData(beforePath, eventsToParse, parseOpts{})
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
-		}
-		beforeEventCounts = parsed.eventCounts
-		beforeStacksByEvent = parsed.stacksByEvent
-	}
-	var afterEventCounts map[string]int
-	var afterStacksByEvent map[string]*stackFile
-	if isJFRPath(afterPath) {
-		parsed, err := parseJFRData(afterPath, eventsToParse, parseOpts{})
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
-		}
-		afterEventCounts = parsed.eventCounts
-		afterStacksByEvent = parsed.stacksByEvent
-	}
-	eventReason := eventReasonUnknown
-	eventType, eventReason = resolveEventTypeForDiff(eventType, eventExplicit, beforeEventCounts, afterEventCounts)
-
-	var before *stackFile
-	if beforeStacksByEvent != nil {
-		before = beforeStacksByEvent[eventType]
-		if before == nil {
-			before = &stackFile{}
-		}
-	} else {
-		var err error
-		before, _, err = openInput(beforePath, eventType)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
-		}
-	}
-
-	var after *stackFile
-	if afterStacksByEvent != nil {
-		after = afterStacksByEvent[eventType]
-		if after == nil {
-			after = &stackFile{}
-		}
-	} else {
-		var err error
-		after, _, err = openInput(afterPath, eventType)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
-		}
-	}
-	if thread != "" {
-		before = before.filterByThread(thread)
-		after = after.filterByThread(thread)
-	}
-	top := f.intVal([]string{"top"}, 0)
-	printEventSelectionForDiff(eventType, eventReason, beforeEventCounts, afterEventCounts)
-	cmdDiff(before, after, minDelta, top, fqn)
-}
-
-func exitTimelineRequiresJFR() {
-	fmt.Fprintln(os.Stderr, "error: timeline requires a JFR file")
-	os.Exit(2)
-}
-
-// ---------------------------------------------------------------------------
-// main
-// ---------------------------------------------------------------------------
-
-func main() {
-	if len(os.Args) < 2 {
-		usage()
-	}
-
-	cmd := os.Args[1]
-	if cmd == "-h" || cmd == "--help" || cmd == "help" {
-		usage()
-	}
-	if cmd == "version" || cmd == "--version" {
-		printVersion(os.Stdout)
-		return
-	}
-	if cmd != "script" {
-		for _, a := range os.Args[2:] {
-			if a == "-h" || a == "--help" {
-				if h, ok := commandHelp[cmd]; ok {
-					fmt.Print(h)
-				} else {
-					usage()
-				}
-				return
-			}
-			if a == "--" {
-				break
-			}
-		}
-	}
-	f := parseFlags(os.Args[2:])
-	if cmd == "update" {
-		cmdUpdate(f.boolean("force"))
-		return
-	}
-
-	if cmd == "script" {
-		cmdScript(os.Args[2:])
-		return
-	}
-
-	if cmd == "init" {
-		cmdInit(initOpts{
-			asprof:  f.str("asprof"),
-			force:   f.boolean("force"),
-			project: f.boolean("project"),
-			claude:  f.boolean("claude"),
-			codex:   f.boolean("codex"),
-			stdout:  f.boolean("stdout"),
-		})
-		return
-	}
-
-	eventExplicit := f.str("event", "e") != ""
-	eventType := f.str("event", "e")
+func preprocessProfile(opts preprocessOpts) (*profileContext, error) {
+	eventExplicit := opts.eventFlag != ""
+	eventType := opts.eventFlag
 	if eventType == "" {
 		eventType = "cpu"
 	}
 	switch eventType {
 	case "cpu", "wall", "alloc", "lock":
 	default:
-		fmt.Fprintf(os.Stderr, "error: unknown event type %q (valid: cpu, wall, alloc, lock)\n", eventType)
-		os.Exit(2)
+		return nil, fmt.Errorf("unknown event type %q (valid: cpu, wall, alloc, lock)", eventType)
 	}
-	var err error
 
-	if cmd == "events" {
-		if len(f.args) < 1 {
-			usage()
+	// Parse time range.
+	fromNanos := int64(-1)
+	toNanos := int64(-1)
+	needTimed := false
+	if opts.fromStr != "" || opts.toStr != "" {
+		needTimed = true
+		if opts.fromStr != "" {
+			d, err := time.ParseDuration(opts.fromStr)
+			if err != nil {
+				return nil, fmt.Errorf("invalid --from value %q: %v", opts.fromStr, err)
+			}
+			fromNanos = d.Nanoseconds()
 		}
-		if !isJFRPath(f.args[0]) {
-			fmt.Fprintln(os.Stderr, "error: events command requires a JFR file")
-			os.Exit(2)
+		if opts.toStr != "" {
+			d, err := time.ParseDuration(opts.toStr)
+			if err != nil {
+				return nil, fmt.Errorf("invalid --to value %q: %v", opts.toStr, err)
+			}
+			toNanos = d.Nanoseconds()
 		}
-		if err := cmdEvents(f.args[0]); err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
+		if fromNanos >= 0 && toNanos >= 0 && toNanos < fromNanos {
+			return nil, fmt.Errorf("--to must be >= --from")
 		}
-		return
 	}
 
-	tr := parseTimeRangeFlags(&f, cmd)
-	fromNanos, toNanos := tr.fromNanos, tr.toNanos
-	fromStr := tr.fromStr
-	needTimed := tr.needTimed
-
-	if cmd == "diff" {
-		handleDiffCommand(&f, eventType, eventExplicit)
-		return
-	}
-
-	if len(f.args) < 1 {
-		usage()
-	}
-	path := f.args[0]
-	thread := f.str("t", "thread")
-	var eventCounts map[string]int
-	eventReason := eventReasonUnknown
-	var sf *stackFile
-	isJFR := false
-	var parsed *parsedJFR
+	path := opts.path
+	cmd := opts.command
 
 	if cmd == "timeline" && !isJFRPath(path) {
-		exitTimelineRequiresJFR()
+		return nil, fmt.Errorf("timeline requires a JFR file")
 	}
 
 	if needTimed && !isJFRPath(path) {
@@ -474,28 +114,33 @@ func main() {
 		needTimed = true
 	}
 
+	var sf *stackFile
+	var parsed *parsedJFR
+	isJFR := false
+	var eventCounts map[string]int
+	eventReason := eventReasonUnknown
+
 	if isJFRPath(path) {
 		isJFR = true
 		eventsToParse := allJFREventTypes()
 		if eventExplicit {
 			eventsToParse = singleJFREventType(eventType)
 		}
-		opts := parseOpts{}
+		po := parseOpts{}
 		if needTimed {
-			opts.collectTimestamps = true
-			opts.fromNanos = fromNanos
-			opts.toNanos = toNanos
+			po.collectTimestamps = true
+			po.fromNanos = fromNanos
+			po.toNanos = toNanos
 		}
-		var parseErr error
-		parsed, parseErr = parseJFRData(path, eventsToParse, opts)
-		if parseErr != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", parseErr)
-			os.Exit(1)
+		var err error
+		parsed, err = parseJFRData(path, eventsToParse, po)
+		if err != nil {
+			return nil, err
 		}
 
 		if fromNanos >= 0 && parsed.spanNanos > 0 && fromNanos >= parsed.spanNanos {
 			fmt.Fprintf(os.Stderr, "warning: --from %s is beyond recording duration (%s); result will be empty\n",
-				fromStr, formatDuration(parsed.spanNanos))
+				opts.fromStr, formatDuration(parsed.spanNanos))
 			fromNanos = parsed.spanNanos
 		}
 		if toNanos >= 0 && parsed.spanNanos > 0 && toNanos > parsed.spanNanos {
@@ -503,7 +148,6 @@ func main() {
 		}
 
 		if needTimed && parsed.timedEvents != nil {
-			// Recompute event counts from filtered timed events.
 			filteredCounts := make(map[string]int)
 			for et, events := range parsed.timedEvents {
 				if len(events) > 0 {
@@ -520,23 +164,25 @@ func main() {
 			sf = &stackFile{}
 		}
 	} else {
+		var err error
 		sf, isJFR, err = openInput(path, eventType)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
+			return nil, err
 		}
 	}
 
-	if thread != "" && cmd != "timeline" {
+	// Thread filter (skipped for timeline — it does its own).
+	if opts.thread != "" && cmd != "timeline" {
 		totalBefore := sf.totalSamples
-		sf = sf.filterByThread(thread)
+		sf = sf.filterByThread(opts.thread)
 		if totalBefore > 0 {
 			fmt.Fprintf(os.Stderr, "Thread filter: %s — %d/%d samples (%.1f%%)\n",
-				thread, sf.totalSamples, totalBefore, pctOf(sf.totalSamples, totalBefore))
+				opts.thread, sf.totalSamples, totalBefore, pctOf(sf.totalSamples, totalBefore))
 		}
 	}
-	noIdle := f.boolean("no-idle")
-	if noIdle && cmd != "timeline" {
+
+	// Idle filter (skipped for timeline — it does its own).
+	if opts.noIdle && cmd != "timeline" {
 		totalBefore := sf.totalSamples
 		sf = sf.filterIdle()
 		if totalBefore > 0 {
@@ -544,9 +190,13 @@ func main() {
 				sf.totalSamples, totalBefore, pctOf(totalBefore-sf.totalSamples, totalBefore))
 		}
 	}
+
+	// Event selection info (skipped for info, timeline).
 	if isJFR && cmd != "info" && cmd != "timeline" {
 		printEventSelectionForSingle(eventType, eventReason, eventCounts)
 	}
+
+	// Time window echo (skipped for timeline).
 	if needTimed && cmd != "timeline" {
 		if fromNanos >= 0 && toNanos >= 0 {
 			fmt.Fprintf(os.Stderr, "Window: %s to %s\n", formatDuration(fromNanos), formatDuration(toNanos))
@@ -556,7 +206,9 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Window: start to %s\n", formatDuration(toNanos))
 		}
 	}
-	if eventType == "wall" && !noIdle {
+
+	// Idle hint for wall profiles.
+	if eventType == "wall" && !opts.noIdle {
 		idleCount := 0
 		for i := range sf.stacks {
 			st := &sf.stacks[i]
@@ -571,153 +223,162 @@ func main() {
 		}
 	}
 
-	switch cmd {
-	case "hot":
-		top := f.intVal([]string{"top"}, 10)
-		fqn := f.boolean("fqn")
-		assertBelow := f.floatVal([]string{"assert-below"}, 0)
-		if err := cmdHot(sf, top, fqn, assertBelow); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-
-	case "tree":
-		method := f.str("m", "method")
-		depth := f.intVal([]string{"depth"}, 4)
-		minPct := f.floatVal([]string{"min-pct"}, 1.0)
-		hide := f.str("hide")
-		if hide != "" {
-			re, err := regexp.Compile(hide)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "error: invalid --hide regex: %v\n", err)
-				os.Exit(2)
-			}
-			sf = sf.hideFrames(re)
-		}
-		cmdTree(sf, method, depth, minPct)
-
-	case "trace":
-		method := f.str("m", "method")
-		if method == "" {
-			fmt.Fprintln(os.Stderr, "error: -m/--method required")
-			os.Exit(2)
-		}
-		hide := f.str("hide")
-		if hide != "" {
-			re, err := regexp.Compile(hide)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "error: invalid --hide regex: %v\n", err)
-				os.Exit(2)
-			}
-			sf = sf.hideFrames(re)
-		}
-		minPct := f.floatVal([]string{"min-pct"}, 0.5)
-		fqn := f.boolean("fqn")
-		cmdTrace(sf, method, minPct, fqn)
-
-	case "callers":
-		method := f.str("m", "method")
-		if method == "" {
-			fmt.Fprintln(os.Stderr, "error: -m/--method required")
-			os.Exit(2)
-		}
-		hide := f.str("hide")
-		if hide != "" {
-			re, err := regexp.Compile(hide)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "error: invalid --hide regex: %v\n", err)
-				os.Exit(2)
-			}
-			sf = sf.hideFrames(re)
-		}
-		depth := f.intVal([]string{"depth"}, 4)
-		minPct := f.floatVal([]string{"min-pct"}, 1.0)
-		cmdCallers(sf, method, depth, minPct)
-
-	case "threads":
-		top := f.intVal([]string{"top"}, 0)
-		group := f.boolean("group")
-		cmdThreads(sf, top, group)
-
-	case "filter":
-		method := f.str("m", "method")
-		if method == "" {
-			fmt.Fprintln(os.Stderr, "error: -m/--method required")
-			os.Exit(2)
-		}
-		inclCallers := f.boolean("include-callers")
-		cmdFilter(sf, method, inclCallers)
-
-	case "collapse":
-		cmdCollapse(sf)
-
-	case "lines":
-		method := f.str("m", "method")
-		if method == "" {
-			fmt.Fprintln(os.Stderr, "error: -m/--method required")
-			os.Exit(2)
-		}
-		top := f.intVal([]string{"top"}, 0)
-		fqn := f.boolean("fqn")
-		if err := cmdLines(sf, method, top, fqn); err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
-		}
-
-	case "timeline":
-		if !isJFR {
-			exitTimelineRequiresJFR()
-		}
-		buckets := f.intVal([]string{"buckets"}, 0)
-		resolution := f.str("resolution")
-		method := f.str("m", "method")
-		topMethod := !f.boolean("no-top-method")
-		var hideRe *regexp.Regexp
-		if hide := f.str("hide"); hide != "" {
-			re, err := regexp.Compile(hide)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "error: invalid --hide regex: %v\n", err)
-				os.Exit(2)
-			}
-			hideRe = re
-		}
-		topN := f.intVal([]string{"top"}, 0)
-		pctFlag := f.boolean("pct")
-		cmdTimeline(parsed, eventType, buckets, resolution, method, topMethod, noIdle, hideRe, thread, fromNanos, toNanos, topN, pctFlag)
-
-	case "info":
-		expand := f.intVal([]string{"expand"}, 3)
-		topThreads := f.intVal([]string{"top-threads"}, 10)
-		topMethods := f.intVal([]string{"top-methods"}, 20)
-		var spanNanos int64
-		var infoStacksByEvent map[string]*stackFile
-		if parsed != nil {
-			spanNanos = parsed.spanNanos
-			if thread == "" {
-				infoStacksByEvent = parsed.stacksByEvent
-				if noIdle && infoStacksByEvent != nil {
-					filtered := make(map[string]*stackFile, len(infoStacksByEvent))
-					for k, v := range infoStacksByEvent {
-						filtered[k] = v.filterIdle()
-					}
-					infoStacksByEvent = filtered
+	// Build stacksByEvent for info cross-event summary.
+	var stacksByEvent map[string]*stackFile
+	if parsed != nil {
+		if opts.thread == "" {
+			stacksByEvent = parsed.stacksByEvent
+			if opts.noIdle && stacksByEvent != nil {
+				filtered := make(map[string]*stackFile, len(stacksByEvent))
+				for k, v := range stacksByEvent {
+					filtered[k] = v.filterIdle()
 				}
+				stacksByEvent = filtered
 			}
 		}
-		cmdInfo(sf, infoOpts{
-			eventType:     eventType,
-			isJFR:         isJFR,
-			eventCounts:   eventCounts,
-			expand:        expand,
-			topThreads:    topThreads,
-			topMethods:    topMethods,
-			spanNanos:     spanNanos,
-			stacksByEvent: infoStacksByEvent,
-		})
-
-	default:
-		usage()
 	}
+
+	var spanNanos int64
+	if parsed != nil {
+		spanNanos = parsed.spanNanos
+	}
+
+	return &profileContext{
+		sf:            sf,
+		parsed:        parsed,
+		isJFR:         isJFR,
+		eventType:     eventType,
+		eventExplicit: eventExplicit,
+		eventCounts:   eventCounts,
+		eventReason:   eventReason,
+		fromNanos:     fromNanos,
+		toNanos:       toNanos,
+		spanNanos:     spanNanos,
+		stacksByEvent: stacksByEvent,
+	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Shared flag helpers
+// ---------------------------------------------------------------------------
+
+type sharedFlags struct {
+	event  string
+	thread string
+	from   string
+	to     string
+	noIdle bool
+}
+
+func (s *sharedFlags) register(cmd *cobra.Command) {
+	cmd.Flags().StringVarP(&s.event, "event", "e", "", "Event type: cpu, wall, alloc, lock (default: cpu)")
+	cmd.Flags().StringVarP(&s.thread, "thread", "t", "", "Filter to threads matching substring")
+	cmd.Flags().StringVar(&s.from, "from", "", "Start of time window (JFR only)")
+	cmd.Flags().StringVar(&s.to, "to", "", "End of time window (JFR only)")
+	cmd.Flags().BoolVar(&s.noIdle, "no-idle", false, "Remove idle leaf frames")
+}
+
+func (s *sharedFlags) toOpts(path, command string) preprocessOpts {
+	return preprocessOpts{
+		eventFlag: s.event,
+		thread:    s.thread,
+		fromStr:   s.from,
+		toStr:     s.to,
+		noIdle:    s.noIdle,
+		path:      path,
+		command:   command,
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Root command and main
+// ---------------------------------------------------------------------------
+
+func newRootCmd() *cobra.Command {
+	root := &cobra.Command{
+		Use:     "ap-query <command> [flags] <file>",
+		Short:   "Analyze async-profiler profiles (JFR or collapsed text)",
+		Version: version,
+		Long: `ap-query: analyze async-profiler profiles (JFR or collapsed text)
+
+Input auto-detection:
+  .jfr / .jfr.gz  ->  JFR binary (supports --event selection)
+  everything else  ->  collapsed-stack text (one "frames count" per line)
+  -                ->  collapsed text from stdin
+
+Examples:
+  ap-query info profile.jfr
+  ap-query hot profile.jfr --event cpu --top 20
+  ap-query timeline profile.jfr
+  ap-query hot profile.jfr --from 5s --to 10s
+  ap-query tree profile.jfr -m HashMap.resize --depth 6
+  ap-query diff before.jfr after.jfr --min-delta 0.5
+  ap-query collapse profile.jfr --event wall | ap-query hot -
+  echo "A;B;C 10" | ap-query hot -
+
+Run 'ap-query <command> --help' for command-specific help.`,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cmd.Help()
+			return fmt.Errorf("no command specified")
+		},
+	}
+	root.AddCommand(
+		newHotCmd(),
+		newTreeCmd(),
+		newTraceCmd(),
+		newCallersCmd(),
+		newThreadsCmd(),
+		newFilterCmd(),
+		newCollapseCmd(),
+		newLinesCmd(),
+		newTimelineCmd(),
+		newInfoCmd(),
+		newDiffCmd(),
+		newEventsCmd(),
+		newScriptCmd(),
+		newInitCmd(),
+		newUpdateCmd(),
+		newVersionCmd(),
+	)
+	return root
+}
+
+func main() {
+	if err := newRootCmd().Execute(); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// update and version commands
+// ---------------------------------------------------------------------------
+
+func newVersionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print version and check for updates",
+		Args:  cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			printVersion(os.Stdout)
+		},
+	}
+}
+
+func newUpdateCmd() *cobra.Command {
+	var force bool
+	cmd := &cobra.Command{
+		Use:   "update",
+		Short: "Download and install the latest release",
+		Args:  cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			cmdUpdate(force)
+		},
+	}
+	cmd.Flags().BoolVar(&force, "force", false, "Force update even for dev/go-install builds")
+	return cmd
 }
 
 // ---------------------------------------------------------------------------

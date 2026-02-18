@@ -4,25 +4,35 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/spf13/cobra"
 )
 
-const filterHelp = `Usage: ap-query filter [flags] <file>
-
-Output stacks passing through a method (-m required).
-
-Flags:
-  -m METHOD, --method METHOD   Substring match on method name (required).
-  --include-callers            Include caller frames in output.
-  --event TYPE, -e TYPE        Event type (default: cpu).
-  -t THREAD                    Filter to threads matching substring.
-  --from DURATION              Start of time window (JFR only).
-  --to DURATION                End of time window (JFR only).
-  --no-idle                    Remove idle leaf frames.
-
-Examples:
-  ap-query filter profile.jfr -m HashMap.resize
-  ap-query filter profile.jfr -m HashMap.resize --include-callers
-`
+func newFilterCmd() *cobra.Command {
+	var shared sharedFlags
+	var method string
+	var inclCallers bool
+	cmd := &cobra.Command{
+		Use:   "filter <file>",
+		Short: "Output stacks passing through a method (-m required)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if method == "" {
+				return fmt.Errorf("-m/--method required")
+			}
+			pctx, err := preprocessProfile(shared.toOpts(args[0], "filter"))
+			if err != nil {
+				return err
+			}
+			cmdFilter(pctx.sf, method, inclCallers)
+			return nil
+		},
+	}
+	shared.register(cmd)
+	cmd.Flags().StringVarP(&method, "method", "m", "", "Substring match on method name (required)")
+	cmd.Flags().BoolVar(&inclCallers, "include-callers", false, "Include caller frames in output")
+	return cmd
+}
 
 func cmdFilter(sf *stackFile, method string, includeCallers bool) {
 	if sf.totalSamples == 0 {

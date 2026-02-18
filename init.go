@@ -18,7 +18,28 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/spf13/cobra"
 )
+
+func newInitCmd() *cobra.Command {
+	var opts initOpts
+	cmd := &cobra.Command{
+		Use:   "init",
+		Short: "Install agent skill for JFR profiling analysis",
+		Args:  cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			cmdInit(opts)
+		},
+	}
+	cmd.Flags().StringVar(&opts.asprof, "asprof", "", "Path to asprof binary")
+	cmd.Flags().BoolVar(&opts.force, "force", false, "Overwrite existing skill file")
+	cmd.Flags().BoolVar(&opts.project, "project", false, "Install to project directory instead of global")
+	cmd.Flags().BoolVar(&opts.claude, "claude", false, "Target Claude agent")
+	cmd.Flags().BoolVar(&opts.codex, "codex", false, "Target Codex agent")
+	cmd.Flags().BoolVar(&opts.stdout, "stdout", false, "Print rendered skill to stdout instead of installing")
+	return cmd
+}
 
 //go:embed skill_template.md
 var skillTemplate string

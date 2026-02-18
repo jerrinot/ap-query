@@ -1610,25 +1610,6 @@ func TestFilterIdle(t *testing.T) {
 // TestParseFlags
 // ---------------------------------------------------------------------------
 
-func TestParseFlags(t *testing.T) {
-	f := parseFlags([]string{"file.jfr", "--top", "20", "--fqn", "-m", "Foo.bar", "--assert-below", "15.0"})
-	if len(f.args) != 1 || f.args[0] != "file.jfr" {
-		t.Errorf("args = %v, want [file.jfr]", f.args)
-	}
-	if f.vals["top"] != "20" {
-		t.Errorf("top = %q, want 20", f.vals["top"])
-	}
-	if !f.bools["fqn"] {
-		t.Error("expected fqn=true")
-	}
-	if f.vals["m"] != "Foo.bar" {
-		t.Errorf("m = %q, want Foo.bar", f.vals["m"])
-	}
-	if f.vals["assert-below"] != "15.0" {
-		t.Errorf("assert-below = %q, want 15.0", f.vals["assert-below"])
-	}
-}
-
 // ---------------------------------------------------------------------------
 // TestArchiveName
 // ---------------------------------------------------------------------------
@@ -2267,100 +2248,6 @@ func TestCmdHotEmpty(t *testing.T) {
 	err := cmdHot(sf, 0, false, 0)
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// TestFlag* (flag accessor methods)
-// ---------------------------------------------------------------------------
-
-func TestFlagStr(t *testing.T) {
-	f := parseFlags([]string{"--event", "wall", "-m", "Foo.bar"})
-
-	if f.str("event") != "wall" {
-		t.Errorf("str(event) = %q, want wall", f.str("event"))
-	}
-	if f.str("m") != "Foo.bar" {
-		t.Errorf("str(m) = %q, want Foo.bar", f.str("m"))
-	}
-	// Multiple keys: first match wins
-	if f.str("missing", "event") != "wall" {
-		t.Errorf("str(missing, event) = %q, want wall", f.str("missing", "event"))
-	}
-	// No match
-	if f.str("nonexistent") != "" {
-		t.Errorf("str(nonexistent) = %q, want empty", f.str("nonexistent"))
-	}
-}
-
-func TestFlagIntVal(t *testing.T) {
-	f := parseFlags([]string{"--top", "20"})
-
-	if f.intVal([]string{"top"}, 10) != 20 {
-		t.Errorf("intVal(top) = %d, want 20", f.intVal([]string{"top"}, 10))
-	}
-	// Default when missing
-	if f.intVal([]string{"missing"}, 42) != 42 {
-		t.Errorf("intVal(missing) = %d, want 42", f.intVal([]string{"missing"}, 42))
-	}
-	// Multiple keys
-	if f.intVal([]string{"missing", "top"}, 0) != 20 {
-		t.Errorf("intVal(missing, top) = %d, want 20", f.intVal([]string{"missing", "top"}, 0))
-	}
-}
-
-func TestFlagFloatVal(t *testing.T) {
-	f := parseFlags([]string{"--min-delta", "0.5"})
-
-	if f.floatVal([]string{"min-delta"}, 1.0) != 0.5 {
-		t.Errorf("floatVal(min-delta) = %f, want 0.5", f.floatVal([]string{"min-delta"}, 1.0))
-	}
-	// Default when missing
-	if f.floatVal([]string{"missing"}, 1.5) != 1.5 {
-		t.Errorf("floatVal(missing) = %f, want 1.5", f.floatVal([]string{"missing"}, 1.5))
-	}
-}
-
-func TestFlagBoolean(t *testing.T) {
-	f := parseFlags([]string{"--fqn", "--include-callers"})
-
-	if !f.boolean("fqn") {
-		t.Error("expected fqn=true")
-	}
-	if !f.boolean("include-callers") {
-		t.Error("expected include-callers=true")
-	}
-	if f.boolean("missing") {
-		t.Error("expected missing=false")
-	}
-	// Multiple keys: any match → true
-	if !f.boolean("missing", "fqn") {
-		t.Error("expected boolean(missing, fqn)=true")
-	}
-}
-
-func TestParseFlagsDoubleDash(t *testing.T) {
-	f := parseFlags([]string{"--top", "20", "--", "--not-a-flag", "file.jfr"})
-
-	if f.vals["top"] != "20" {
-		t.Errorf("top = %q, want 20", f.vals["top"])
-	}
-	if len(f.args) != 2 {
-		t.Fatalf("args = %v, want [--not-a-flag file.jfr]", f.args)
-	}
-	if f.args[0] != "--not-a-flag" || f.args[1] != "file.jfr" {
-		t.Errorf("args = %v", f.args)
-	}
-}
-
-func TestParseFlagsUnknownBoolAtEnd(t *testing.T) {
-	f := parseFlags([]string{"file.jfr", "--verbose"})
-
-	if !f.bools["verbose"] {
-		t.Error("expected --verbose treated as boolean")
-	}
-	if len(f.args) != 1 || f.args[0] != "file.jfr" {
-		t.Errorf("args = %v, want [file.jfr]", f.args)
 	}
 }
 
@@ -5663,43 +5550,8 @@ func TestWallSampleWeight(t *testing.T) {
 }
 
 func TestFromToValidation(t *testing.T) {
-	// Test flag parsing for --from/--to validation.
-	tests := []struct {
-		name      string
-		args      []string
-		wantBool  bool // expect flag in bools (bare flag)
-		wantValue string
-	}{
-		{
-			name:     "bare from at end",
-			args:     []string{"hot", "--from"},
-			wantBool: true,
-		},
-		{
-			name:      "from with value",
-			args:      []string{"hot", "--from", "10s", "testdata/cpu.jfr"},
-			wantValue: "10s",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			f := parseFlags(tt.args[1:]) // skip command
-			if tt.wantBool {
-				if !f.bools["from"] {
-					t.Error("expected --from in bools")
-				}
-			}
-			if tt.wantValue != "" {
-				if f.str("from") != tt.wantValue {
-					t.Errorf("--from = %q, want %q", f.str("from"), tt.wantValue)
-				}
-			}
-		})
-	}
-
 	// Test that --to < --from is detectable.
 	t.Run("inverted range", func(t *testing.T) {
-		// Parse durations and verify comparison logic.
 		from, _ := time.ParseDuration("10s")
 		to, _ := time.ParseDuration("5s")
 		if to >= from {
@@ -6036,20 +5888,20 @@ func TestToClamping(t *testing.T) {
 
 func TestFromToWithDiffError(t *testing.T) {
 	exitCode, _, stderr := runCLIForTest(t, []string{"diff", "--from", "5s", "a.jfr", "b.jfr"}, nil)
-	if exitCode != 2 {
-		t.Fatalf("exit code = %d, want 2; stderr=%q", exitCode, stderr)
+	if exitCode == 0 {
+		t.Fatalf("exit code = 0, want non-zero; stderr=%q", stderr)
 	}
-	if !strings.Contains(stderr, "error: --from/--to not supported with diff") {
-		t.Fatalf("expected diff time-window rejection, got %q", stderr)
+	if !strings.Contains(stderr, "unknown flag") {
+		t.Fatalf("expected unknown flag error, got %q", stderr)
 	}
 }
 
 func TestTimelineRejectsNonJFR(t *testing.T) {
 	exitCode, _, stderr := runCLIForTest(t, []string{"timeline", "does-not-exist.collapsed"}, nil)
-	if exitCode != 2 {
-		t.Fatalf("exit code = %d, want 2; stderr=%q", exitCode, stderr)
+	if exitCode == 0 {
+		t.Fatalf("exit code = 0, want non-zero; stderr=%q", stderr)
 	}
-	if !strings.Contains(stderr, "error: timeline requires a JFR file") {
+	if !strings.Contains(stderr, "timeline requires a JFR file") {
 		t.Fatalf("expected timeline-only validation error, got %q", stderr)
 	}
 	if strings.Contains(stderr, "no such file or directory") {
@@ -6090,10 +5942,10 @@ func TestTimelineRejectsStdinWithoutReading(t *testing.T) {
 				t.Fatalf("wait helper process: %v", err)
 			}
 		}
-		if exitCode != 2 {
-			t.Fatalf("exit code = %d, want 2; stderr=%q", exitCode, stderr.String())
+		if exitCode == 0 {
+			t.Fatalf("exit code = 0, want non-zero; stderr=%q", stderr.String())
 		}
-		if !strings.Contains(stderr.String(), "error: timeline requires a JFR file") {
+		if !strings.Contains(stderr.String(), "timeline requires a JFR file") {
 			t.Fatalf("expected timeline-only validation error, got %q", stderr.String())
 		}
 	case <-time.After(2 * time.Second):
@@ -6106,8 +5958,8 @@ func TestTimelineBucketCountBound(t *testing.T) {
 	path := jfrFixture("cpu.jfr")
 
 	exitCode, _, stderr := runCLIForTest(t, []string{"timeline", path, "--buckets", "10001"}, nil)
-	if exitCode != 2 {
-		t.Fatalf("exit code = %d, want 2; stderr=%q", exitCode, stderr)
+	if exitCode == 0 {
+		t.Fatalf("exit code = 0, want non-zero; stderr=%q", stderr)
 	}
 	if !strings.Contains(stderr, "exceeds maximum (10000)") {
 		t.Fatalf("expected max bucket validation, got %q", stderr)
@@ -6128,8 +5980,8 @@ func TestTimelineBucketCountBound(t *testing.T) {
 	resolution := fmt.Sprintf("%dns", resolutionNanos)
 
 	exitCode, _, stderr = runCLIForTest(t, []string{"timeline", path, "--resolution", resolution}, nil)
-	if exitCode != 2 {
-		t.Fatalf("resolution path exit code = %d, want 2; stderr=%q", exitCode, stderr)
+	if exitCode == 0 {
+		t.Fatalf("resolution path exit code = 0, want non-zero; stderr=%q", stderr)
 	}
 	if !strings.Contains(stderr, "exceeds maximum (10000)") {
 		t.Fatalf("expected max bucket validation for --resolution, got %q", stderr)
@@ -6605,27 +6457,46 @@ func TestScriptHelpStillWorks(t *testing.T) {
 
 func TestUnknownCommandHelp(t *testing.T) {
 	code, _, stderr := runCLIForTest(t, []string{"nonexistent", "--help"}, nil)
-	if code != 2 {
-		t.Errorf("nonexistent --help exit code = %d, want 2", code)
+	if code != 1 {
+		t.Errorf("nonexistent --help exit code = %d, want 1", code)
 	}
-	if !strings.Contains(stderr, "ap-query") {
-		t.Errorf("nonexistent --help should show global usage, got:\n%s", stderr)
-	}
-}
-
-func TestPerCommandHelpNoDoublePercent(t *testing.T) {
-	// Per-command help is printed with fmt.Print, so %% would display literally.
-	for cmd, h := range commandHelp {
-		if strings.Contains(h, "%%") {
-			t.Errorf("%s help contains '%%%%' which will display as double percent signs", cmd)
-		}
+	if !strings.Contains(stderr, "unknown command") {
+		t.Errorf("nonexistent --help should mention unknown command, got:\n%s", stderr)
 	}
 }
 
 func TestGlobalHelpMentionsPerCommand(t *testing.T) {
-	_, _, stderr := runCLIForTest(t, []string{"--help"}, nil)
-	if !strings.Contains(stderr, "command> --help") {
-		t.Errorf("global help should mention per-command help, got:\n%s", stderr)
+	_, stdout, _ := runCLIForTest(t, []string{"--help"}, nil)
+	if !strings.Contains(stdout, "help") {
+		t.Errorf("global help should mention help, got:\n%s", stdout)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestUnknownFlagRejected — cobra rejects unknown flags
+// ---------------------------------------------------------------------------
+
+func TestUnknownFlagRejected(t *testing.T) {
+	code, _, stderr := runCLIForTest(t, []string{"hot", jfrFixture("cpu.jfr"), "--tp", "5"}, nil)
+	if code == 0 {
+		t.Error("expected non-zero exit for unknown flag --tp")
+	}
+	if !strings.Contains(stderr, "unknown flag") {
+		t.Errorf("expected 'unknown flag' in stderr, got:\n%s", stderr)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestFromNegativeDuration — --from -1s works (pflag handles negative values)
+// ---------------------------------------------------------------------------
+
+func TestFromNegativeDuration(t *testing.T) {
+	code, stdout, stderr := runCLIForTest(t, []string{"hot", jfrFixture("cpu.jfr"), "--from", "-1s"}, nil)
+	if code != 0 {
+		t.Errorf("--from -1s exit code = %d, want 0, stderr:\n%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "SELF TIME") {
+		t.Errorf("expected hot output, got:\n%s", stdout)
 	}
 }
 
@@ -6808,8 +6679,8 @@ func TestCmdTimelinePctEmptyBucket(t *testing.T) {
 func TestCmdTimelinePctRequiresMethod(t *testing.T) {
 	path := jfrFixture("cpu.jfr")
 	exitCode, _, stderr := runCLIForTest(t, []string{"timeline", path, "--pct"}, nil)
-	if exitCode != 2 {
-		t.Errorf("expected exit code 2, got %d", exitCode)
+	if exitCode == 0 {
+		t.Errorf("expected non-zero exit code, got 0")
 	}
 	if !strings.Contains(stderr, "--pct requires --method") {
 		t.Errorf("expected '--pct requires --method' in stderr, got:\n%s", stderr)

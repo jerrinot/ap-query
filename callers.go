@@ -3,27 +3,48 @@ package main
 import (
 	"fmt"
 	"os"
+	"regexp"
+
+	"github.com/spf13/cobra"
 )
 
-const callersHelp = `Usage: ap-query callers [flags] <file>
-
-Callers ascending to a method (-m required).
-
-Flags:
-  -m METHOD, --method METHOD   Substring match on method name (required).
-  --depth N                    Max depth (default: 4).
-  --min-pct F                  Hide nodes below this % (default: 1.0).
-  --hide REGEX                 Remove matching frames before analysis.
-  --event TYPE, -e TYPE        Event type (default: cpu).
-  -t THREAD                    Filter to threads matching substring.
-  --from DURATION              Start of time window (JFR only).
-  --to DURATION                End of time window (JFR only).
-  --no-idle                    Remove idle leaf frames.
-
-Examples:
-  ap-query callers profile.jfr -m HashMap.resize
-  ap-query callers profile.jfr -m HashMap.resize --depth 6
-`
+func newCallersCmd() *cobra.Command {
+	var shared sharedFlags
+	var method string
+	var depth int
+	var minPct float64
+	var hide string
+	cmd := &cobra.Command{
+		Use:   "callers <file>",
+		Short: "Callers ascending to a method (-m required)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if method == "" {
+				return fmt.Errorf("-m/--method required")
+			}
+			pctx, err := preprocessProfile(shared.toOpts(args[0], "callers"))
+			if err != nil {
+				return err
+			}
+			sf := pctx.sf
+			if hide != "" {
+				re, err := regexp.Compile(hide)
+				if err != nil {
+					return fmt.Errorf("invalid --hide regex: %v", err)
+				}
+				sf = sf.hideFrames(re)
+			}
+			cmdCallers(sf, method, depth, minPct)
+			return nil
+		},
+	}
+	shared.register(cmd)
+	cmd.Flags().StringVarP(&method, "method", "m", "", "Substring match on method name (required)")
+	cmd.Flags().IntVar(&depth, "depth", 4, "Max depth")
+	cmd.Flags().Float64Var(&minPct, "min-pct", 1.0, "Hide nodes below this %")
+	cmd.Flags().StringVar(&hide, "hide", "", "Remove matching frames before analysis (regex)")
+	return cmd
+}
 
 func cmdCallers(sf *stackFile, method string, maxDepth int, minPct float64) {
 	if sf.totalSamples == 0 {

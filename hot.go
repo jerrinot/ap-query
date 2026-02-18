@@ -3,27 +3,33 @@ package main
 import (
 	"fmt"
 	"sort"
+
+	"github.com/spf13/cobra"
 )
 
-const hotHelp = `Usage: ap-query hot [flags] <file>
-
-Rank methods by self-time and total-time.
-
-Flags:
-  --event TYPE, -e TYPE   Event type: cpu, wall, alloc, lock (default: cpu).
-  --top N                 Limit output rows (default: 10).
-  --fqn                   Show fully-qualified names.
-  --assert-below F        Exit 1 if top method self% >= F (for CI gates).
-  -t THREAD               Filter to threads matching substring.
-  --from DURATION         Start of time window (JFR only).
-  --to DURATION           End of time window (JFR only).
-  --no-idle               Remove idle leaf frames.
-
-Examples:
-  ap-query hot profile.jfr --event cpu --top 20
-  ap-query hot profile.jfr -t "http-nio" --assert-below 15.0
-  echo "A;B;C 10" | ap-query hot -
-`
+func newHotCmd() *cobra.Command {
+	var shared sharedFlags
+	var top int
+	var fqn bool
+	var assertBelow float64
+	cmd := &cobra.Command{
+		Use:   "hot <file>",
+		Short: "Rank methods by self-time and total-time",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			pctx, err := preprocessProfile(shared.toOpts(args[0], "hot"))
+			if err != nil {
+				return err
+			}
+			return cmdHot(pctx.sf, top, fqn, assertBelow)
+		},
+	}
+	shared.register(cmd)
+	cmd.Flags().IntVar(&top, "top", 10, "Limit output rows")
+	cmd.Flags().BoolVar(&fqn, "fqn", false, "Show fully-qualified names")
+	cmd.Flags().Float64Var(&assertBelow, "assert-below", 0, "Exit 1 if top method self% >= F (for CI gates)")
+	return cmd
+}
 
 type hotEntry struct {
 	name       string

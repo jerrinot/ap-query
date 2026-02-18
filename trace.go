@@ -4,29 +4,50 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/spf13/cobra"
 )
 
-const traceHelp = `Usage: ap-query trace [flags] <file>
-
-Hottest path from a method to leaf (-m required).
-
-Flags:
-  -m METHOD, --method METHOD   Substring match on method name (required).
-  --min-pct F                  Hide nodes below this % (default: 0.5).
-  --fqn                        Show fully-qualified names.
-  --hide REGEX                 Remove matching frames before analysis.
-  --event TYPE, -e TYPE        Event type (default: cpu).
-  -t THREAD                    Filter to threads matching substring.
-  --from DURATION              Start of time window (JFR only).
-  --to DURATION                End of time window (JFR only).
-  --no-idle                    Remove idle leaf frames.
-
-Examples:
-  ap-query trace profile.jfr -m HashMap.resize
-  ap-query trace profile.jfr -m HashMap.resize --min-pct 0.5
-`
+func newTraceCmd() *cobra.Command {
+	var shared sharedFlags
+	var method string
+	var minPct float64
+	var fqn bool
+	var hide string
+	cmd := &cobra.Command{
+		Use:   "trace <file>",
+		Short: "Hottest path from a method to leaf (-m required)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if method == "" {
+				return fmt.Errorf("-m/--method required")
+			}
+			pctx, err := preprocessProfile(shared.toOpts(args[0], "trace"))
+			if err != nil {
+				return err
+			}
+			sf := pctx.sf
+			if hide != "" {
+				re, err := regexp.Compile(hide)
+				if err != nil {
+					return fmt.Errorf("invalid --hide regex: %v", err)
+				}
+				sf = sf.hideFrames(re)
+			}
+			cmdTrace(sf, method, minPct, fqn)
+			return nil
+		},
+	}
+	shared.register(cmd)
+	cmd.Flags().StringVarP(&method, "method", "m", "", "Substring match on method name (required)")
+	cmd.Flags().Float64Var(&minPct, "min-pct", 0.5, "Hide nodes below this %")
+	cmd.Flags().BoolVar(&fqn, "fqn", false, "Show fully-qualified names")
+	cmd.Flags().StringVar(&hide, "hide", "", "Remove matching frames before analysis (regex)")
+	return cmd
+}
 
 func cmdTrace(sf *stackFile, method string, minPct float64, fqn bool) {
 	if sf.totalSamples == 0 {

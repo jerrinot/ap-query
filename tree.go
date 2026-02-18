@@ -3,27 +3,45 @@ package main
 import (
 	"fmt"
 	"os"
+	"regexp"
+
+	"github.com/spf13/cobra"
 )
 
-const treeHelp = `Usage: ap-query tree [flags] <file>
-
-Call tree descending from a method (shows all roots if -m omitted).
-
-Flags:
-  -m METHOD, --method METHOD   Substring match on method name.
-  --depth N                    Max depth (default: 4).
-  --min-pct F                  Hide nodes below this % (default: 1.0).
-  --hide REGEX                 Remove matching frames before analysis.
-  --event TYPE, -e TYPE        Event type (default: cpu).
-  -t THREAD                    Filter to threads matching substring.
-  --from DURATION              Start of time window (JFR only).
-  --to DURATION                End of time window (JFR only).
-  --no-idle                    Remove idle leaf frames.
-
-Examples:
-  ap-query tree profile.jfr -m HashMap.resize --depth 6
-  ap-query tree profile.jfr --hide "Thread\.(run|start)" --depth 6
-`
+func newTreeCmd() *cobra.Command {
+	var shared sharedFlags
+	var method string
+	var depth int
+	var minPct float64
+	var hide string
+	cmd := &cobra.Command{
+		Use:   "tree <file>",
+		Short: "Call tree descending from a method (optional -m; shows all if omitted)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			pctx, err := preprocessProfile(shared.toOpts(args[0], "tree"))
+			if err != nil {
+				return err
+			}
+			sf := pctx.sf
+			if hide != "" {
+				re, err := regexp.Compile(hide)
+				if err != nil {
+					return fmt.Errorf("invalid --hide regex: %v", err)
+				}
+				sf = sf.hideFrames(re)
+			}
+			cmdTree(sf, method, depth, minPct)
+			return nil
+		},
+	}
+	shared.register(cmd)
+	cmd.Flags().StringVarP(&method, "method", "m", "", "Substring match on method name")
+	cmd.Flags().IntVar(&depth, "depth", 4, "Max depth")
+	cmd.Flags().Float64Var(&minPct, "min-pct", 1.0, "Hide nodes below this %")
+	cmd.Flags().StringVar(&hide, "hide", "", "Remove matching frames before analysis (regex)")
+	return cmd
+}
 
 func cmdTree(sf *stackFile, method string, maxDepth int, minPct float64) {
 	if sf.totalSamples == 0 {

@@ -3,25 +3,32 @@ package main
 import (
 	"fmt"
 	"sort"
+
+	"github.com/spf13/cobra"
 )
 
-const threadsHelp = `Usage: ap-query threads [flags] <file>
-
-Thread sample distribution.
-
-Flags:
-  --top N                 Limit output rows (default: unlimited).
-  --group                 Group threads by normalized name.
-  --event TYPE, -e TYPE   Event type (default: cpu).
-  -t THREAD               Filter to threads matching substring.
-  --from DURATION         Start of time window (JFR only).
-  --to DURATION           End of time window (JFR only).
-  --no-idle               Remove idle leaf frames.
-
-Examples:
-  ap-query threads profile.jfr
-  ap-query threads profile.jfr --group --top 10
-`
+func newThreadsCmd() *cobra.Command {
+	var shared sharedFlags
+	var top int
+	var group bool
+	cmd := &cobra.Command{
+		Use:   "threads <file>",
+		Short: "Thread sample distribution",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			pctx, err := preprocessProfile(shared.toOpts(args[0], "threads"))
+			if err != nil {
+				return err
+			}
+			cmdThreads(pctx.sf, top, group)
+			return nil
+		},
+	}
+	shared.register(cmd)
+	cmd.Flags().IntVar(&top, "top", 0, "Limit output rows (default: unlimited)")
+	cmd.Flags().BoolVar(&group, "group", false, "Group threads by normalized name")
+	return cmd
+}
 
 type threadEntry struct {
 	name    string

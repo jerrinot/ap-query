@@ -4,26 +4,105 @@ import (
 	"fmt"
 	"math"
 	"sort"
+
+	"github.com/spf13/cobra"
 )
 
-const diffHelp = `Usage: ap-query diff [flags] <before> <after>
+func newDiffCmd() *cobra.Command {
+	var event string
+	var thread string
+	var minDelta float64
+	var top int
+	var fqn bool
+	cmd := &cobra.Command{
+		Use:   "diff <before> <after>",
+		Short: "Compare two profiles: shows REGRESSION / IMPROVEMENT / NEW / GONE",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			beforePath := args[0]
+			afterPath := args[1]
 
-Compare two profiles: shows REGRESSION / IMPROVEMENT / NEW / GONE.
+			eventExplicit := event != ""
+			eventType := event
+			if eventType == "" {
+				eventType = "cpu"
+			}
+			switch eventType {
+			case "cpu", "wall", "alloc", "lock":
+			default:
+				return fmt.Errorf("unknown event type %q (valid: cpu, wall, alloc, lock)", eventType)
+			}
 
-Flags:
-  --min-delta F               Hide entries below this % change (default: 0.5).
-  --top N                     Limit output rows (default: unlimited).
-  --fqn                       Show fully-qualified names.
-  --event TYPE, -e TYPE       Event type (default: cpu).
-  -t THREAD                   Filter to threads matching substring.
+			eventsToParse := allJFREventTypes()
+			if eventExplicit {
+				eventsToParse = singleJFREventType(eventType)
+			}
 
-Examples:
-  ap-query diff before.jfr after.jfr
-  ap-query diff before.jfr after.jfr --min-delta 0.5
+			var beforeEventCounts map[string]int
+			var beforeStacksByEvent map[string]*stackFile
+			if isJFRPath(beforePath) {
+				parsed, err := parseJFRData(beforePath, eventsToParse, parseOpts{})
+				if err != nil {
+					return err
+				}
+				beforeEventCounts = parsed.eventCounts
+				beforeStacksByEvent = parsed.stacksByEvent
+			}
+			var afterEventCounts map[string]int
+			var afterStacksByEvent map[string]*stackFile
+			if isJFRPath(afterPath) {
+				parsed, err := parseJFRData(afterPath, eventsToParse, parseOpts{})
+				if err != nil {
+					return err
+				}
+				afterEventCounts = parsed.eventCounts
+				afterStacksByEvent = parsed.stacksByEvent
+			}
+			eventType, eventReason := resolveEventTypeForDiff(eventType, eventExplicit, beforeEventCounts, afterEventCounts)
 
-Same-file time-window comparison: use 'ap-query script' with
-  timeline() → bucket.profile → diff(). See script --help.
-`
+			var before *stackFile
+			if beforeStacksByEvent != nil {
+				before = beforeStacksByEvent[eventType]
+				if before == nil {
+					before = &stackFile{}
+				}
+			} else {
+				var err error
+				before, _, err = openInput(beforePath, eventType)
+				if err != nil {
+					return err
+				}
+			}
+
+			var after *stackFile
+			if afterStacksByEvent != nil {
+				after = afterStacksByEvent[eventType]
+				if after == nil {
+					after = &stackFile{}
+				}
+			} else {
+				var err error
+				after, _, err = openInput(afterPath, eventType)
+				if err != nil {
+					return err
+				}
+			}
+			if thread != "" {
+				before = before.filterByThread(thread)
+				after = after.filterByThread(thread)
+			}
+			printEventSelectionForDiff(eventType, eventReason, beforeEventCounts, afterEventCounts)
+			cmdDiff(before, after, minDelta, top, fqn)
+			return nil
+		},
+	}
+	cmd.Flags().StringVarP(&event, "event", "e", "", "Event type: cpu, wall, alloc, lock (default: cpu)")
+	cmd.Flags().StringVarP(&thread, "thread", "t", "", "Filter to threads matching substring")
+	cmd.Flags().Float64Var(&minDelta, "min-delta", 0.5, "Hide entries below this % change")
+	cmd.Flags().IntVar(&top, "top", 0, "Limit output rows (default: unlimited)")
+	cmd.Flags().BoolVar(&fqn, "fqn", false, "Show fully-qualified names")
+	return cmd
+}
 
 func selfPcts(sf *stackFile, fqn bool) map[string]float64 {
 	counts := selfCounts(sf, fqn)

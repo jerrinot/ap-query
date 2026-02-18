@@ -8,32 +8,51 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/spf13/cobra"
 )
 
-const timelineHelp = `Usage: ap-query timeline [flags] <file>
-
-Sample distribution over time (JFR only).
-
-Flags:
-  --buckets N                  Number of time buckets (default: auto ~20).
-  --resolution DURATION        Fixed bucket width (e.g. 1s, 500ms). Overrides --buckets.
-  -m METHOD, --method METHOD   Only count samples containing METHOD.
-  --no-top-method              Omit per-bucket hot method annotation.
-  --top N                      Show only the N highest-sample buckets.
-  --pct                        Show method percentage per bucket (requires --method).
-  --hide REGEX                 Remove matching frames before analysis.
-  --event TYPE, -e TYPE        Event type (default: cpu).
-  -t THREAD                    Filter to threads matching substring.
-  --from DURATION              Start of time window.
-  --to DURATION                End of time window.
-  --no-idle                    Remove idle leaf frames.
-
-Examples:
-  ap-query timeline profile.jfr
-  ap-query timeline profile.jfr --from 12s --to 14s --resolution 500ms
-  ap-query timeline profile.jfr --top 5
-  ap-query timeline profile.jfr -m HashMap.resize --pct
-`
+func newTimelineCmd() *cobra.Command {
+	var shared sharedFlags
+	var buckets int
+	var resolution string
+	var method string
+	var noTopMethod bool
+	var topN int
+	var pctFlag bool
+	var hide string
+	cmd := &cobra.Command{
+		Use:   "timeline <file>",
+		Short: "Sample distribution over time (JFR only)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			pctx, err := preprocessProfile(shared.toOpts(args[0], "timeline"))
+			if err != nil {
+				return err
+			}
+			var hideRe *regexp.Regexp
+			if hide != "" {
+				re, err := regexp.Compile(hide)
+				if err != nil {
+					return fmt.Errorf("invalid --hide regex: %v", err)
+				}
+				hideRe = re
+			}
+			return cmdTimeline(pctx.parsed, pctx.eventType, buckets, resolution, method,
+				!noTopMethod, shared.noIdle, hideRe, shared.thread,
+				pctx.fromNanos, pctx.toNanos, topN, pctFlag)
+		},
+	}
+	shared.register(cmd)
+	cmd.Flags().IntVar(&buckets, "buckets", 0, "Number of time buckets (default: auto ~20)")
+	cmd.Flags().StringVar(&resolution, "resolution", "", "Fixed bucket width (e.g. 1s, 500ms)")
+	cmd.Flags().StringVarP(&method, "method", "m", "", "Only count samples containing METHOD")
+	cmd.Flags().BoolVar(&noTopMethod, "no-top-method", false, "Omit per-bucket hot method annotation")
+	cmd.Flags().IntVar(&topN, "top", 0, "Show only the N highest-sample buckets")
+	cmd.Flags().BoolVar(&pctFlag, "pct", false, "Show method percentage per bucket")
+	cmd.Flags().StringVar(&hide, "hide", "", "Remove matching frames before analysis (regex)")
+	return cmd
+}
 
 func resolveBucketRange(fromNanos, toNanos, span int64, events []timedEvent) (bucketOrigin, bucketSpan int64) {
 	if fromNanos >= 0 {
@@ -62,21 +81,19 @@ func resolveBucketRange(fromNanos, toNanos, span int64, events []timedEvent) (bu
 	return
 }
 
-func computeBucketWidth(bucketSpan int64, buckets int, resolution string) (numBuckets int, bucketWidth int64) {
+func computeBucketWidth(bucketSpan int64, buckets int, resolution string) (numBuckets int, bucketWidth int64, err error) {
 	numBuckets = buckets
 
 	if bucketSpan == 0 {
-		return 1, 0
+		return 1, 0, nil
 	} else if resolution != "" {
-		d, err := time.ParseDuration(resolution)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: invalid --resolution value %q: %v\n", resolution, err)
-			os.Exit(2)
+		d, parseErr := time.ParseDuration(resolution)
+		if parseErr != nil {
+			return 0, 0, fmt.Errorf("invalid resolution %q: %v", resolution, parseErr)
 		}
 		bucketWidth = d.Nanoseconds()
 		if bucketWidth <= 0 {
-			fmt.Fprintln(os.Stderr, "error: --resolution must be positive")
-			os.Exit(2)
+			return 0, 0, fmt.Errorf("resolution must be positive")
 		}
 		numBuckets = int(math.Ceil(float64(bucketSpan) / float64(bucketWidth)))
 		if numBuckets < 1 {
@@ -92,24 +109,19 @@ func computeBucketWidth(bucketSpan int64, buckets int, resolution string) (numBu
 			numBuckets = 40
 		}
 	}
-	const maxBuckets = 10_000
-	if numBuckets > maxBuckets {
-		fmt.Fprintf(os.Stderr, "error: bucket count %d exceeds maximum (%d); use a larger --resolution or fewer --buckets\n", numBuckets, maxBuckets)
-		os.Exit(2)
-	}
 	if bucketWidth == 0 && bucketSpan > 0 {
 		bucketWidth = bucketSpan / int64(numBuckets)
 		if bucketWidth == 0 {
 			bucketWidth = 1
 		}
 	}
-	return
+	return numBuckets, bucketWidth, nil
 }
 
 func cmdTimeline(parsed *parsedJFR, eventType string,
 	buckets int, resolution string, method string, topMethod bool,
 	noIdle bool, hide *regexp.Regexp, thread string, fromNanos, toNanos int64,
-	topN int, pct bool) {
+	topN int, pct bool) error {
 
 	events := parsed.timedEvents[eventType]
 	bucketOrigin, bucketSpan := resolveBucketRange(fromNanos, toNanos, parsed.spanNanos, events)
@@ -199,16 +211,22 @@ func cmdTimeline(parsed *parsedJFR, eventType string,
 	}
 
 	if pct && method == "" {
-		fmt.Fprintln(os.Stderr, "error: --pct requires --method")
-		os.Exit(2)
+		return fmt.Errorf("--pct requires --method")
 	}
 
 	if method != "" && matchedWeight == 0 {
 		noMatchMessage(os.Stdout, stackFileFromEvents(preMethodEvents), method)
-		return
+		return nil
 	}
 
-	numBuckets, bucketWidth := computeBucketWidth(bucketSpan, buckets, resolution)
+	numBuckets, bucketWidth, err := computeBucketWidth(bucketSpan, buckets, resolution)
+	if err != nil {
+		return err
+	}
+	const maxBuckets = 10_000
+	if numBuckets > maxBuckets {
+		return fmt.Errorf("bucket count %d exceeds maximum (%d); use a larger --resolution or fewer --buckets", numBuckets, maxBuckets)
+	}
 
 	// Assign events to buckets.
 	bucketCounts := make([]int, numBuckets)
@@ -427,6 +445,7 @@ func cmdTimeline(parsed *parsedJFR, eventType string,
 			fmt.Printf("%-17s %s  %s%s\n", timeLabel, valueStr, bar, peak)
 		}
 	}
+	return nil
 }
 
 func timelinePrecision(bucketWidth int64) int {

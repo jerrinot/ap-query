@@ -3,15 +3,23 @@ package main
 import (
 	"fmt"
 	"sort"
+
+	"github.com/spf13/cobra"
 )
 
-const eventsHelp = `Usage: ap-query events <file>
-
-List event types and their counts in a JFR file.
-
-Examples:
-  ap-query events profile.jfr
-`
+func newEventsCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "events <file>",
+		Short: "List event types in a JFR file (JFR only)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !isJFRPath(args[0]) {
+				return fmt.Errorf("events command requires a JFR file")
+			}
+			return cmdEvents(args[0])
+		},
+	}
+}
 
 func cmdEvents(path string) error {
 	parsed, err := parseJFRData(path, nil, parseOpts{})

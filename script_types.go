@@ -245,39 +245,11 @@ func (p *starlarkProfile) methodGroupBy(thread *starlark.Thread, b *starlark.Bui
 	return dict, nil
 }
 
-func computeBucketWidthSafe(bucketSpan int64, buckets int, resolution string) (numBuckets int, bucketWidth int64, err error) {
-	numBuckets = buckets
-	if bucketSpan == 0 {
-		return 1, 0, nil
-	} else if resolution != "" {
-		d, parseErr := time.ParseDuration(resolution)
-		if parseErr != nil {
-			return 0, 0, fmt.Errorf("timeline: invalid resolution %q: %v", resolution, parseErr)
-		}
-		bucketWidth = d.Nanoseconds()
-		if bucketWidth <= 0 {
-			return 0, 0, fmt.Errorf("timeline: resolution must be positive")
-		}
-		numBuckets = int(math.Ceil(float64(bucketSpan) / float64(bucketWidth)))
-		if numBuckets < 1 {
-			numBuckets = 1
-		}
-	} else if numBuckets <= 0 {
-		numBuckets = int(float64(bucketSpan) / float64(time.Second) / 1.5)
-		if numBuckets < 5 {
-			numBuckets = 5
-		}
-		if numBuckets > 40 {
-			numBuckets = 40
-		}
-	}
-	if bucketWidth == 0 && bucketSpan > 0 {
-		bucketWidth = bucketSpan / int64(numBuckets)
-		if bucketWidth == 0 {
-			bucketWidth = 1
-		}
-	}
-	return numBuckets, bucketWidth, nil
+// computeBucketWidthSafe delegates to computeBucketWidth for Starlark scripts.
+// The caller (methodTimeline) applies its own bucket cap (100M), separate from
+// the CLI's 10K cap enforced in cmdTimeline.
+func computeBucketWidthSafe(bucketSpan int64, buckets int, resolution string) (int, int64, error) {
+	return computeBucketWidth(bucketSpan, buckets, resolution)
 }
 
 func (p *starlarkProfile) ensureTimedParsed() (*parsedJFR, error) {

@@ -10,9 +10,21 @@ import (
 	"strings"
 	"time"
 
+	"github.com/spf13/cobra"
 	"go.starlark.net/starlark"
 	"go.starlark.net/syntax"
 )
+
+func newScriptCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:                "script [flags] <file>",
+		Short:              "Starlark scripting for custom analysis",
+		DisableFlagParsing: true,
+		Run: func(cmd *cobra.Command, args []string) {
+			cmdScript(args)
+		},
+	}
+}
 
 //go:embed script_help.txt
 var scriptHelpText string

@@ -4,25 +4,36 @@ import (
 	"fmt"
 	"os"
 	"sort"
+
+	"github.com/spf13/cobra"
 )
 
-const linesHelp = `Usage: ap-query lines [flags] <file>
-
-Source-line breakdown inside a method (-m required).
-
-Flags:
-  -m METHOD, --method METHOD   Substring match on method name (required).
-  --top N                      Limit output rows (default: unlimited).
-  --fqn                        Show fully-qualified names.
-  --event TYPE, -e TYPE        Event type (default: cpu).
-  -t THREAD                    Filter to threads matching substring.
-  --from DURATION              Start of time window (JFR only).
-  --to DURATION                End of time window (JFR only).
-  --no-idle                    Remove idle leaf frames.
-
-Examples:
-  ap-query lines profile.jfr -m HashMap.resize
-`
+func newLinesCmd() *cobra.Command {
+	var shared sharedFlags
+	var method string
+	var top int
+	var fqn bool
+	cmd := &cobra.Command{
+		Use:   "lines <file>",
+		Short: "Source-line breakdown inside a method (-m required)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if method == "" {
+				return fmt.Errorf("-m/--method required")
+			}
+			pctx, err := preprocessProfile(shared.toOpts(args[0], "lines"))
+			if err != nil {
+				return err
+			}
+			return cmdLines(pctx.sf, method, top, fqn)
+		},
+	}
+	shared.register(cmd)
+	cmd.Flags().StringVarP(&method, "method", "m", "", "Substring match on method name (required)")
+	cmd.Flags().IntVar(&top, "top", 0, "Limit output rows (default: unlimited)")
+	cmd.Flags().BoolVar(&fqn, "fqn", false, "Show fully-qualified names")
+	return cmd
+}
 
 type lineEntry struct {
 	name    string
