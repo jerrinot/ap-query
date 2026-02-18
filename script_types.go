@@ -147,10 +147,14 @@ func (p *starlarkProfile) AttrNames() []string {
 func (p *starlarkProfile) methodHot(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var n int
 	var fqn bool
-	if err := starlark.UnpackArgs(b.Name(), args, kwargs, "n?", &n, "fqn?", &fqn); err != nil {
+	var sortBy string
+	if err := starlark.UnpackArgs(b.Name(), args, kwargs, "n?", &n, "fqn?", &fqn, "sort?", &sortBy); err != nil {
 		return nil, err
 	}
-	ranked := computeHot(p.sf, fqn)
+	ranked, err := computeHotSorted(p.sf, fqn, sortBy)
+	if err != nil {
+		return nil, err
+	}
 	if n > 0 && n < len(ranked) {
 		ranked = ranked[:n]
 	}
@@ -663,11 +667,15 @@ func (b *starlarkBucket) AttrNames() []string {
 
 func (b *starlarkBucket) methodHot(_ *starlark.Thread, bn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	n := 5
-	if err := starlark.UnpackArgs(bn.Name(), args, kwargs, "n?", &n); err != nil {
+	var sortBy string
+	if err := starlark.UnpackArgs(bn.Name(), args, kwargs, "n?", &n, "sort?", &sortBy); err != nil {
 		return nil, err
 	}
 	p := b.buildProfile()
-	ranked := computeHot(p.sf, false)
+	ranked, err := computeHotSorted(p.sf, false, sortBy)
+	if err != nil {
+		return nil, err
+	}
 	if n > 0 && n < len(ranked) {
 		ranked = ranked[:n]
 	}

@@ -52,7 +52,7 @@ Types:
     .event         string — selected event type
     .events        list[string] — all event types in the file
     .path          string
-    .hot(n=all, fqn=False)             → list[Method]    Top methods by self time.
+    .hot(n=all, fqn=False, sort="self") → list[Method]    Top methods. sort="total" ranks by total time.
     .threads(n?)                       → list[Thread]     Thread sample distribution.
     .filter(fn(Stack)→bool)            → Profile          Keep matching stacks.
     .group_by(fn(Stack)→string|None)   → dict[str,Profile] Partition by key; None excludes.
@@ -103,7 +103,7 @@ Types:
     .start         float — seconds    .end    float — seconds
     .samples       int                .stacks list[Stack]
     .label         string — formatted time range (e.g. "4m20.0s-4m30.0s")
-    .hot(n=5) → list[Method]
+    .hot(n=5, sort="self") → list[Method]
     .profile → Profile    Full Profile wrapping bucket data.
 
   Diff — returned by diff()

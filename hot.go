@@ -81,6 +81,22 @@ func computeHot(sf *stackFile, fqn bool) []hotEntry {
 	return ranked
 }
 
+// computeHotSorted returns hot entries sorted by the given key ("self" or "total").
+// An empty sortBy defaults to "self". Returns an error for unknown values.
+func computeHotSorted(sf *stackFile, fqn bool, sortBy string) ([]hotEntry, error) {
+	if sortBy == "" {
+		sortBy = "self"
+	}
+	if sortBy != "self" && sortBy != "total" {
+		return nil, fmt.Errorf("hot: sort must be \"self\" or \"total\", got %q", sortBy)
+	}
+	ranked := computeHot(sf, fqn)
+	if sortBy == "total" {
+		sort.Slice(ranked, func(i, j int) bool { return ranked[i].totalCount > ranked[j].totalCount })
+	}
+	return ranked, nil
+}
+
 func printHotTables(ranked []hotEntry, top, totalSamples int, showTopN bool) {
 	selfRanked := ranked[:truncate(len(ranked), top)]
 

@@ -111,7 +111,8 @@ compound predicates, multi-file comparison, CI budget enforcement.
 
 Run `{{AP_QUERY_PATH}} script --help` for the full scripting API reference (types, functions, examples).
 
-Key scripting APIs: `Profile.no_idle()` filters idle leaf frames (scripting equivalent of `--no-idle`);
+Key scripting APIs: `Profile.hot(sort="total")` ranks by total time instead of self time;
+`Profile.no_idle()` filters idle leaf frames (scripting equivalent of `--no-idle`);
 `Bucket.label` returns the formatted time range string for timeline buckets;
 `Stack.thread_has(pattern)` substring-matches on thread name; `round(x, decimals=0)` rounds floats;
 `ljust(value, width)`/`rjust(value, width)` justify strings (like Python's str.ljust/rjust);

@@ -836,6 +836,82 @@ print(m.self_pct > 0.0)
 	}
 }
 
+func TestProfileHotSortTotal(t *testing.T) {
+	p := testProfile()
+	out := captureOutput(func() {
+		code := runScript(`
+m = p.hot(sort="total")[0]
+print(m.name)
+print(m.total)
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	// Top by total should be Thread.run or Server.handle (both total=15).
+	name := strings.TrimSpace(lines[0])
+	if name != "Thread.run" && name != "Server.handle" {
+		t.Fatalf("expected Thread.run or Server.handle at top by total, got %q", name)
+	}
+	if strings.TrimSpace(lines[1]) != "15" {
+		t.Fatalf("expected total=15, got %q", lines[1])
+	}
+}
+
+func TestProfileHotSortSelfExplicit(t *testing.T) {
+	p := testProfile()
+	out := captureOutput(func() {
+		code := runScript(`
+m = p.hot(sort="self")[0]
+print(m.name)
+print(m.self)
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if strings.TrimSpace(lines[0]) != "HashMap.put" {
+		t.Fatalf("expected HashMap.put at top by self, got %q", lines[0])
+	}
+	if strings.TrimSpace(lines[1]) != "10" {
+		t.Fatalf("expected self=10, got %q", lines[1])
+	}
+}
+
+func TestProfileHotSortInvalid(t *testing.T) {
+	p := testProfile()
+	stderr := captureStream(&os.Stderr, func() {
+		code := runScript(`p.hot(sort="bogus")`, "", nil, testTimeout, withPredeclared("p", p))
+		if code == 0 {
+			t.Fatalf("expected error for invalid sort value")
+		}
+	})
+	if !strings.Contains(stderr, `sort must be "self" or "total"`) {
+		t.Fatalf("expected sort error message, got %q", stderr)
+	}
+}
+
+func TestProfileHotSortTotalWithN(t *testing.T) {
+	p := testProfile()
+	out := captureOutput(func() {
+		code := runScript(`
+methods = p.hot(2, sort="total")
+print(len(methods))
+for m in methods:
+    print(m.name, m.total)
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if strings.TrimSpace(lines[0]) != "2" {
+		t.Fatalf("expected 2 results, got %q", lines[0])
+	}
+}
+
 func TestProfileThreads(t *testing.T) {
 	p := testProfile()
 	out := captureOutput(func() {
@@ -1671,6 +1747,27 @@ for b in buckets:
         top = b.hot(1)
         if len(top) > 0:
             print(top[0].name)
+            break
+`, scriptFixture("cpu.jfr")), "", nil, testTimeout)
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	if strings.TrimSpace(out) == "" {
+		t.Fatalf("expected a hot method name, got empty")
+	}
+}
+
+func TestBucketHotSortTotal(t *testing.T) {
+	out := captureOutput(func() {
+		code := runScript(fmt.Sprintf(`
+p = open(%q)
+buckets = p.timeline(buckets=5)
+for b in buckets:
+    if b.samples > 0:
+        top = b.hot(1, sort="total")
+        if len(top) > 0:
+            print(top[0].name, top[0].total)
             break
 `, scriptFixture("cpu.jfr")), "", nil, testTimeout)
 		if code != 0 {
