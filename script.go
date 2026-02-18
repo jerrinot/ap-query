@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 	"go.starlark.net/starlark"
@@ -139,6 +140,7 @@ func runScript(inline, scriptFile string, scriptArgs []string, timeout time.Dura
 		"match":    starlark.NewBuiltin("match", builtinMatch),
 		"diff":     starlark.NewBuiltin("diff", builtinDiff),
 		"round":    starlark.NewBuiltin("round", builtinRound),
+		"pad":      starlark.NewBuiltin("pad", builtinPad),
 	}
 	for _, e := range extras {
 		predeclared[e.name] = e.value
@@ -350,4 +352,39 @@ func builtinRound(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, 
 	}
 	mult := math.Pow(10, float64(decimals))
 	return starlark.Float(math.Round(x*mult) / mult), nil
+}
+
+func valToString(v starlark.Value) string {
+	if s, ok := v.(starlark.String); ok {
+		return string(s)
+	}
+	if b, ok := v.(starlark.Bytes); ok {
+		return string(b)
+	}
+	return v.String()
+}
+
+func builtinPad(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	var val starlark.Value
+	var width int
+	if err := starlark.UnpackArgs(b.Name(), args, kwargs, "value", &val, "width", &width); err != nil {
+		return nil, err
+	}
+	s := valToString(val)
+	abs := width
+	if abs < 0 {
+		abs = -abs
+	}
+	if abs < 0 { // overflow: -math.MinInt == math.MinInt
+		return nil, fmt.Errorf("pad: width out of range")
+	}
+	charLen := utf8.RuneCountInString(s)
+	if charLen >= abs {
+		return starlark.String(s), nil
+	}
+	pad := strings.Repeat(" ", abs-charLen)
+	if width < 0 {
+		return starlark.String(s + pad), nil // left-align
+	}
+	return starlark.String(pad + s), nil // right-align
 }
