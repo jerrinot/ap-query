@@ -116,4 +116,9 @@ Key scripting APIs: `Profile.no_idle()` filters idle leaf frames (scripting equi
 `Stack.thread_has(pattern)` substring-matches on thread name; `round(x, decimals=0)` rounds floats;
 `Profile.summary()` returns a one-line summary string;
 `Profile.start`/`.end` return scope boundaries in seconds (0/duration for root profiles, matching split/bucket boundaries for scoped profiles);
-`Profile.split()` accepts duration strings (`"5s"`, `"1m30s"`) alongside float seconds.
+`Profile.split()` accepts duration strings (`"5s"`, `"1m30s"`) alongside float seconds;
+`diff(a, b, min_delta=0.5, top=0, fqn=False)` compares two Profiles — `top` limits entries per category, `fqn` uses fully-qualified names (changes aggregation granularity).
+
+Windowing patterns (compare time windows within a single recording):
+- `timeline()` → `bucket.profile` → `diff()`: regular-interval comparison.
+- `split([boundary])` → `diff(parts[0], parts[1])`: ad-hoc boundary comparison.

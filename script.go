@@ -306,14 +306,18 @@ func builtinMatch(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, 
 func builtinDiff(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var a, bProf *starlarkProfile
 	minDelta := 0.5
+	var top int
+	var fqn bool
 	if err := starlark.UnpackArgs(b.Name(), args, kwargs,
 		"a", &a,
 		"b", &bProf,
 		"min_delta?", &minDelta,
+		"top?", &top,
+		"fqn?", &fqn,
 	); err != nil {
 		return nil, err
 	}
-	return computeScriptDiff(a.sf, bProf.sf, minDelta), nil
+	return computeScriptDiff(a.sf, bProf.sf, minDelta, top, fqn), nil
 }
 
 func builtinRound(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {

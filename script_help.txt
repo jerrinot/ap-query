@@ -18,8 +18,10 @@ Functions:
       start/end: time window, Go duration syntax (e.g. "5s", "1m30s"). JFR only.
       thread: substring match on thread name.
 
-  diff(a, b, min_delta=0.5) → Diff
+  diff(a, b, min_delta=0.5, top=0, fqn=False) → Diff
       Compare two Profiles by self%. Returns categorized changes.
+      top: limit entries per category (0 = unlimited).
+      fqn: use fully-qualified names (changes aggregation granularity).
 
   round(x, decimals=0) → float
       Round a float. Workaround for Starlark lacking %.Nf format specifiers.
@@ -166,3 +168,26 @@ Examples:
 
   # Filter by thread name (thread_has, not has() — has() searches frames only)
   workers = open("profile.jfr").filter(lambda s: s.thread_has("worker"))
+
+Caching: filter()/no_idle() profiles reuse the parent's parsed timeline data —
+no re-parse. timeline()/split() on a filtered profile is cheap.
+
+Windowing: compare time windows within a single recording.
+  Two approaches:
+  1. timeline() → bucket.profile → diff() — regular intervals.
+  2. split() → diff() — ad-hoc boundaries.
+
+  # Window diff via timeline: compare first vs last bucket
+  p = open("profile.jfr")
+  buckets = p.timeline(resolution="5s")
+  if len(buckets) >= 2:
+      d = diff(buckets[0].profile, buckets[-1].profile)
+      for e in d.regressions:
+          print(e.name + " +" + str(round(e.delta, 1)) + "%")
+
+  # Window diff via split: compare first half vs second half
+  p = open("profile.jfr")
+  parts = p.split([p.duration / 2])
+  d = diff(parts[0], parts[1])
+  for e in d.regressions:
+      print(e.name + " +" + str(round(e.delta, 1)) + "%")

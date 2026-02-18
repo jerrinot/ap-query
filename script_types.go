@@ -1059,50 +1059,65 @@ type starlarkDiff struct {
 	all          []scriptDiffEntry
 }
 
-func computeScriptDiff(before, after *stackFile, minDelta float64) *starlarkDiff {
-	beforePctShort := selfPcts(before, false)
-	afterPctShort := selfPcts(after, false)
+func computeScriptDiff(before, after *stackFile, minDelta float64, top int, fqn bool) *starlarkDiff {
 	beforePctFQN := selfPcts(before, true)
 	afterPctFQN := selfPcts(after, true)
 
-	allMethods := make(map[string]bool)
-	for m := range beforePctShort {
-		allMethods[m] = true
-	}
-	for m := range afterPctShort {
-		allMethods[m] = true
+	var beforePct, afterPct map[string]float64
+	var fqnMap map[string]string
+
+	if fqn {
+		beforePct = beforePctFQN
+		afterPct = afterPctFQN
+	} else {
+		beforePct = selfPcts(before, false)
+		afterPct = selfPcts(after, false)
+		// Build FQN lookup: short name → fqn name.
+		fqnMap = make(map[string]string)
+		for f := range beforePctFQN {
+			short := shortName(strings.ReplaceAll(f, ".", "/"))
+			fqnMap[short] = f
+		}
+		for f := range afterPctFQN {
+			short := shortName(strings.ReplaceAll(f, ".", "/"))
+			fqnMap[short] = f
+		}
 	}
 
-	// Build FQN lookup: short name → fqn name.
-	fqnMap := make(map[string]string)
-	for fqn := range beforePctFQN {
-		short := shortName(strings.ReplaceAll(fqn, ".", "/"))
-		fqnMap[short] = fqn
+	allMethods := make(map[string]bool)
+	for m := range beforePct {
+		allMethods[m] = true
 	}
-	for fqn := range afterPctFQN {
-		short := shortName(strings.ReplaceAll(fqn, ".", "/"))
-		fqnMap[short] = fqn
+	for m := range afterPct {
+		allMethods[m] = true
 	}
 
 	var regressions, improvements, added, removed, allEntries []scriptDiffEntry
 
 	for m := range allMethods {
-		b := beforePctShort[m]
-		a := afterPctShort[m]
+		b := beforePct[m]
+		a := afterPct[m]
 		delta := a - b
-		fqn := fqnMap[m]
-		if fqn == "" {
-			fqn = m
+
+		var entryFQN string
+		if fqn {
+			entryFQN = m
+		} else {
+			entryFQN = fqnMap[m]
+			if entryFQN == "" {
+				entryFQN = m
+			}
 		}
 
-		_, inBefore := beforePctShort[m]
-		_, inAfter := afterPctShort[m]
+		entryName := m
+		_, inBefore := beforePct[m]
+		_, inAfter := afterPct[m]
 
 		if inBefore && inAfter {
 			if math.Abs(delta) < minDelta {
 				continue
 			}
-			entry := scriptDiffEntry{name: m, fqn: fqn, before: b, after: a, delta: delta}
+			entry := scriptDiffEntry{name: entryName, fqn: entryFQN, before: b, after: a, delta: delta}
 			allEntries = append(allEntries, entry)
 			if delta > 0 {
 				regressions = append(regressions, entry)
@@ -1113,14 +1128,14 @@ func computeScriptDiff(before, after *stackFile, minDelta float64) *starlarkDiff
 			if a < minDelta {
 				continue
 			}
-			entry := scriptDiffEntry{name: m, fqn: fqn, before: 0, after: a, delta: a}
+			entry := scriptDiffEntry{name: entryName, fqn: entryFQN, before: 0, after: a, delta: a}
 			added = append(added, entry)
 			allEntries = append(allEntries, entry)
 		} else if inBefore && !inAfter {
 			if b < minDelta {
 				continue
 			}
-			entry := scriptDiffEntry{name: m, fqn: fqn, before: b, after: 0, delta: -b}
+			entry := scriptDiffEntry{name: entryName, fqn: entryFQN, before: b, after: 0, delta: -b}
 			removed = append(removed, entry)
 			allEntries = append(allEntries, entry)
 		}
@@ -1131,6 +1146,12 @@ func computeScriptDiff(before, after *stackFile, minDelta float64) *starlarkDiff
 	sort.Slice(added, func(i, j int) bool { return added[i].after > added[j].after })
 	sort.Slice(removed, func(i, j int) bool { return removed[i].before > removed[j].before })
 	sort.Slice(allEntries, func(i, j int) bool { return math.Abs(allEntries[i].delta) > math.Abs(allEntries[j].delta) })
+
+	regressions = regressions[:truncate(len(regressions), top)]
+	improvements = improvements[:truncate(len(improvements), top)]
+	added = added[:truncate(len(added), top)]
+	removed = removed[:truncate(len(removed), top)]
+	allEntries = allEntries[:truncate(len(allEntries), top)]
 
 	return &starlarkDiff{
 		regressions:  regressions,

@@ -1367,6 +1367,217 @@ print(len(d.all))
 	}
 }
 
+func TestDiffTop(t *testing.T) {
+	before := makeStackFile([]stack{
+		{frames: []string{"A", "B"}, lines: []uint32{0, 0}, count: 40, thread: "t1"},
+		{frames: []string{"A", "C"}, lines: []uint32{0, 0}, count: 30, thread: "t1"},
+		{frames: []string{"A", "D"}, lines: []uint32{0, 0}, count: 30, thread: "t1"},
+	})
+	after := makeStackFile([]stack{
+		{frames: []string{"A", "B"}, lines: []uint32{0, 0}, count: 60, thread: "t1"},
+		{frames: []string{"A", "C"}, lines: []uint32{0, 0}, count: 30, thread: "t1"},
+		{frames: []string{"A", "D"}, lines: []uint32{0, 0}, count: 10, thread: "t1"},
+	})
+	bProf := newStarlarkProfile(before, nil, "cpu", "before")
+	aProf := newStarlarkProfile(after, nil, "cpu", "after")
+	out := captureOutput(func() {
+		code := runScript(`
+d = diff(a, b, top=1)
+print(len(d.regressions))
+print(len(d.improvements))
+print(len(d.all))
+`, "", nil, testTimeout, withPredeclared("a", bProf), withPredeclared("b", aProf))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 lines, got %d: %q", len(lines), out)
+	}
+	// top=1 should truncate each category to at most 1 entry.
+	if strings.TrimSpace(lines[0]) != "1" {
+		t.Fatalf("expected 1 regression with top=1, got %q", lines[0])
+	}
+	if strings.TrimSpace(lines[1]) != "1" {
+		t.Fatalf("expected 1 improvement with top=1, got %q", lines[1])
+	}
+	if strings.TrimSpace(lines[2]) != "1" {
+		t.Fatalf("expected 1 in all with top=1, got %q", lines[2])
+	}
+}
+
+func TestDiffTopZero(t *testing.T) {
+	before := makeStackFile([]stack{
+		{frames: []string{"A", "B"}, lines: []uint32{0, 0}, count: 40, thread: "t1"},
+		{frames: []string{"A", "C"}, lines: []uint32{0, 0}, count: 30, thread: "t1"},
+		{frames: []string{"A", "D"}, lines: []uint32{0, 0}, count: 30, thread: "t1"},
+	})
+	after := makeStackFile([]stack{
+		{frames: []string{"A", "B"}, lines: []uint32{0, 0}, count: 60, thread: "t1"},
+		{frames: []string{"A", "C"}, lines: []uint32{0, 0}, count: 30, thread: "t1"},
+		{frames: []string{"A", "D"}, lines: []uint32{0, 0}, count: 10, thread: "t1"},
+	})
+	bProf := newStarlarkProfile(before, nil, "cpu", "before")
+	aProf := newStarlarkProfile(after, nil, "cpu", "after")
+	out := captureOutput(func() {
+		code := runScript(`
+d = diff(a, b, top=0)
+print(len(d.all))
+`, "", nil, testTimeout, withPredeclared("a", bProf), withPredeclared("b", aProf))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	n := strings.TrimSpace(out)
+	// top=0 means unlimited — B regresses (+20%), D improves (-20%), C unchanged (0% delta, filtered).
+	if n != "2" {
+		t.Fatalf("expected 2 entries with top=0, got %s", n)
+	}
+}
+
+func TestDiffFQN(t *testing.T) {
+	// Two methods with the same short name but different packages.
+	before := makeStackFile([]stack{
+		{frames: []string{"com/example/app/Service.process"}, lines: []uint32{0}, count: 50, thread: "t1"},
+		{frames: []string{"com/example/util/Service.process"}, lines: []uint32{0}, count: 50, thread: "t1"},
+	})
+	after := makeStackFile([]stack{
+		{frames: []string{"com/example/app/Service.process"}, lines: []uint32{0}, count: 80, thread: "t1"},
+		{frames: []string{"com/example/util/Service.process"}, lines: []uint32{0}, count: 20, thread: "t1"},
+	})
+	bProf := newStarlarkProfile(before, nil, "cpu", "before")
+	aProf := newStarlarkProfile(after, nil, "cpu", "after")
+	out := captureOutput(func() {
+		code := runScript(`
+d = diff(a, b, fqn=True)
+print(len(d.all))
+for e in d.all:
+    print(e.name)
+`, "", nil, testTimeout, withPredeclared("a", bProf), withPredeclared("b", aProf))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected at least 2 lines (count + entries), got %d: %q", len(lines), out)
+	}
+	// fqn=True should distinguish the two Service.process methods.
+	count := strings.TrimSpace(lines[0])
+	if count != "2" {
+		t.Fatalf("expected 2 distinct entries with fqn=True, got %s", count)
+	}
+	// Verify names are FQN (contain package prefix).
+	for _, line := range lines[1:] {
+		name := strings.TrimSpace(line)
+		if !strings.Contains(name, "com.example") {
+			t.Fatalf("expected FQN name, got %q", name)
+		}
+	}
+}
+
+func TestDiffFQNEntryNames(t *testing.T) {
+	before := makeStackFile([]stack{
+		{frames: []string{"com/example/app/Service.process"}, lines: []uint32{0}, count: 50, thread: "t1"},
+	})
+	after := makeStackFile([]stack{
+		{frames: []string{"com/example/app/Service.process"}, lines: []uint32{0}, count: 80, thread: "t1"},
+		{frames: []string{"com/example/app/Service.handle"}, lines: []uint32{0}, count: 20, thread: "t1"},
+	})
+	bProf := newStarlarkProfile(before, nil, "cpu", "before")
+	aProf := newStarlarkProfile(after, nil, "cpu", "after")
+	out := captureOutput(func() {
+		code := runScript(`
+d = diff(a, b, fqn=True)
+for e in d.all:
+    print(e.name + "|" + e.fqn)
+`, "", nil, testTimeout, withPredeclared("a", bProf), withPredeclared("b", aProf))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	for _, line := range lines {
+		parts := strings.SplitN(strings.TrimSpace(line), "|", 2)
+		if len(parts) != 2 {
+			t.Fatalf("expected name|fqn, got %q", line)
+		}
+		// When fqn=True, both .name and .fqn should be the FQN.
+		if parts[0] != parts[1] {
+			t.Fatalf("expected name == fqn when fqn=True, got name=%q fqn=%q", parts[0], parts[1])
+		}
+		if !strings.Contains(parts[0], "com.example") {
+			t.Fatalf("expected FQN in name, got %q", parts[0])
+		}
+	}
+}
+
+func TestDiffTimelineWindowing(t *testing.T) {
+	out := captureOutput(func() {
+		code := runScript(fmt.Sprintf(`
+p = open(%q)
+buckets = p.timeline(resolution="5s")
+if len(buckets) < 2:
+    fail("expected at least 2 buckets, got " + str(len(buckets)))
+first = buckets[0].profile
+last = buckets[len(buckets)-1].profile
+d = diff(first, last)
+print(type(d))
+print(type(d.all))
+print("ok")
+`, scriptFixture("cpu.jfr")), "", nil, testTimeout)
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) < 3 {
+		t.Fatalf("expected 3 lines, got %d: %q", len(lines), out)
+	}
+	if strings.TrimSpace(lines[0]) != "Diff" {
+		t.Fatalf("expected Diff type, got %q", lines[0])
+	}
+	if strings.TrimSpace(lines[1]) != "list" {
+		t.Fatalf("expected list type for .all, got %q", lines[1])
+	}
+	if strings.TrimSpace(lines[2]) != "ok" {
+		t.Fatalf("expected ok, got %q", lines[2])
+	}
+}
+
+func TestDiffSplitWindowing(t *testing.T) {
+	out := captureOutput(func() {
+		code := runScript(fmt.Sprintf(`
+p = open(%q)
+dur = p.duration
+if dur <= 0:
+    fail("expected positive duration, got " + str(dur))
+parts = p.split([dur / 2])
+d = diff(parts[0], parts[1])
+print(type(d))
+print(type(d.regressions))
+print("ok")
+`, scriptFixture("cpu.jfr")), "", nil, testTimeout)
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) < 3 {
+		t.Fatalf("expected 3 lines, got %d: %q", len(lines), out)
+	}
+	if strings.TrimSpace(lines[0]) != "Diff" {
+		t.Fatalf("expected Diff type, got %q", lines[0])
+	}
+	if strings.TrimSpace(lines[1]) != "list" {
+		t.Fatalf("expected list type for .regressions, got %q", lines[1])
+	}
+	if strings.TrimSpace(lines[2]) != "ok" {
+		t.Fatalf("expected ok, got %q", lines[2])
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Increment 7 — timeline(), split(), Bucket
 // ---------------------------------------------------------------------------
