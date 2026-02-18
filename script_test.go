@@ -1550,7 +1550,7 @@ func TestSplitMultiple(t *testing.T) {
 	out := captureOutput(func() {
 		code := runScript(fmt.Sprintf(`
 p = open(%q)
-parts = p.split([5.0, 10.0])
+parts = p.split([2.0, 4.0])
 print(len(parts))
 `, scriptFixture("cpu.jfr")), "", nil, testTimeout)
 		if code != 0 {
@@ -1563,24 +1563,23 @@ print(len(parts))
 }
 
 func TestSplitCollapsed(t *testing.T) {
-	out := captureOutput(func() {
+	stderr := captureStream(&os.Stderr, func() {
 		code := runScript(fmt.Sprintf(`
 p = open(%q)
 parts = p.split([5.0])
-print(len(parts))
 `, scriptFixture("perf.collapsed")), "", nil, testTimeout)
-		if code != 0 {
-			t.Fatalf("expected exit 0, got %d", code)
+		if code == 0 {
+			t.Fatalf("expected error for split on collapsed text")
 		}
 	})
-	if strings.TrimSpace(out) != "1" {
-		t.Fatalf("expected 1 part for collapsed, got %q", out)
+	if !strings.Contains(stderr, "requires JFR") {
+		t.Fatalf("expected 'requires JFR' error, got %q", stderr)
 	}
 }
 
 func TestSplitUnsorted(t *testing.T) {
 	stderr := captureStream(&os.Stderr, func() {
-		code := runScript(fmt.Sprintf(`p = open(%q); p.split([10.0, 5.0])`, scriptFixture("cpu.jfr")), "", nil, testTimeout)
+		code := runScript(fmt.Sprintf(`p = open(%q); p.split([4.0, 2.0])`, scriptFixture("cpu.jfr")), "", nil, testTimeout)
 		if code == 0 {
 			t.Fatalf("expected error for unsorted split times")
 		}
@@ -2724,5 +2723,1103 @@ print(type(buckets[0].label))
 	})
 	if strings.TrimSpace(out) != "string" {
 		t.Fatalf("expected string type, got %q", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Stack.thread_has()
+// ---------------------------------------------------------------------------
+
+func TestStackThreadHas(t *testing.T) {
+	p := testProfile()
+	out := captureOutput(func() {
+		code := runScript(`
+s = p.stacks[0]
+print(s.thread_has("worker"))
+print(s.thread_has("worker-1"))
+print(s.thread_has("main"))
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 lines, got %d: %q", len(lines), out)
+	}
+	if strings.TrimSpace(lines[0]) != "True" {
+		t.Fatalf("expected True for 'worker' substring, got %q", lines[0])
+	}
+	if strings.TrimSpace(lines[1]) != "True" {
+		t.Fatalf("expected True for exact 'worker-1', got %q", lines[1])
+	}
+	if strings.TrimSpace(lines[2]) != "False" {
+		t.Fatalf("expected False for 'main' no-match, got %q", lines[2])
+	}
+}
+
+func TestStackThreadHasEmpty(t *testing.T) {
+	// Stack with empty thread name.
+	sf := makeStackFile([]stack{
+		{frames: []string{"A"}, lines: []uint32{0}, count: 1, thread: ""},
+	})
+	p := newStarlarkProfile(sf, nil, "cpu", "test")
+
+	out := captureOutput(func() {
+		code := runScript(`
+s = p.stacks[0]
+print(s.thread_has("anything"))
+print(s.thread_has(""))
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if strings.TrimSpace(lines[0]) != "False" {
+		t.Fatalf("expected False for non-empty pattern on empty thread, got %q", lines[0])
+	}
+	if strings.TrimSpace(lines[1]) != "True" {
+		t.Fatalf("expected True for empty pattern (always matches), got %q", lines[1])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// round()
+// ---------------------------------------------------------------------------
+
+func TestRound(t *testing.T) {
+	out := captureOutput(func() {
+		code := runScript(`
+print(round(3.14159, decimals=0))
+print(round(3.14159, decimals=1))
+print(round(3.14159, decimals=2))
+print(round(3.14159, decimals=3))
+print(round(2.5, decimals=0))
+`, "", nil, testTimeout)
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	expected := []string{"3.0", "3.1", "3.14", "3.142", "3.0"}
+	if len(lines) != len(expected) {
+		t.Fatalf("expected %d lines, got %d: %q", len(expected), len(lines), out)
+	}
+	for i, exp := range expected {
+		if strings.TrimSpace(lines[i]) != exp {
+			t.Fatalf("line %d: expected %q, got %q", i, exp, lines[i])
+		}
+	}
+}
+
+func TestRoundDefaults(t *testing.T) {
+	out := captureOutput(func() {
+		code := runScript(`print(round(3.7))`, "", nil, testTimeout)
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	if strings.TrimSpace(out) != "4.0" {
+		t.Fatalf("expected 4.0, got %q", out)
+	}
+}
+
+func TestRoundInt(t *testing.T) {
+	out := captureOutput(func() {
+		code := runScript(`print(round(3, decimals=1))`, "", nil, testTimeout)
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	if strings.TrimSpace(out) != "3.0" {
+		t.Fatalf("expected 3.0, got %q", out)
+	}
+}
+
+func TestRoundNegativeDecimals(t *testing.T) {
+	out := captureOutput(func() {
+		code := runScript(`print(round(3.14, decimals=-5))`, "", nil, testTimeout)
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	// Negative decimals clamped to 0.
+	if strings.TrimSpace(out) != "3.0" {
+		t.Fatalf("expected 3.0, got %q", out)
+	}
+}
+
+func TestRoundBadType(t *testing.T) {
+	stderr := captureStream(&os.Stderr, func() {
+		code := runScript(`round("hello")`, "", nil, testTimeout)
+		if code == 0 {
+			t.Fatalf("expected error for string argument")
+		}
+	})
+	if !strings.Contains(stderr, "must be a number") {
+		t.Fatalf("expected 'must be a number' error, got %q", stderr)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Profile.summary() and String()
+// ---------------------------------------------------------------------------
+
+func TestProfileSummary(t *testing.T) {
+	p := testProfile()
+	out := captureOutput(func() {
+		code := runScript(`print(p.summary())`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	got := strings.TrimSpace(out)
+	expected := "cpu: 18 samples, 0.0s, 3 stacks"
+	if got != expected {
+		t.Fatalf("expected %q, got %q", expected, got)
+	}
+}
+
+func TestProfileString(t *testing.T) {
+	p := testProfile()
+	out := captureOutput(func() {
+		code := runScript(`print(str(p))`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	got := strings.TrimSpace(out)
+	expected := "cpu: 18 samples, 0.0s, 3 stacks"
+	if got != expected {
+		t.Fatalf("expected %q, got %q", expected, got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Duration bugfix: bucket/split-derived profiles
+// ---------------------------------------------------------------------------
+
+func TestBucketProfileDuration(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A", "B"}, lines: []uint32{0, 0}, count: 4, thread: "t1"},
+	})
+	timed := &parsedJFR{
+		eventCounts:   map[string]int{"cpu": 4},
+		stacksByEvent: map[string]*stackFile{"cpu": sf},
+		timedEvents: map[string][]timedEvent{
+			"cpu": {
+				{offsetNanos: 1e9, stackKey: "A;B", frames: []string{"A", "B"}, lines: []uint32{0, 0}, thread: "t1", weight: 1},
+				{offsetNanos: 2e9, stackKey: "A;B", frames: []string{"A", "B"}, lines: []uint32{0, 0}, thread: "t1", weight: 1},
+				{offsetNanos: 6e9, stackKey: "A;B", frames: []string{"A", "B"}, lines: []uint32{0, 0}, thread: "t1", weight: 1},
+				{offsetNanos: 8e9, stackKey: "A;B", frames: []string{"A", "B"}, lines: []uint32{0, 0}, thread: "t1", weight: 1},
+			},
+		},
+		spanNanos: 10e9,
+	}
+	p := newStarlarkProfile(sf, timed, "cpu", "test.jfr")
+	p.timedParsed = timed
+
+	out := captureOutput(func() {
+		code := runScript(`
+buckets = p.timeline(buckets=2)
+# Bucket 0: [0, 5s), Bucket 1: [5s, 10s)
+print(buckets[0].profile.duration)
+print(buckets[1].profile.duration)
+print(p.duration)
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 lines, got %d: %q", len(lines), out)
+	}
+	// Each bucket spans 5s.
+	if strings.TrimSpace(lines[0]) != "5.0" {
+		t.Fatalf("expected bucket 0 duration 5.0, got %q", lines[0])
+	}
+	if strings.TrimSpace(lines[1]) != "5.0" {
+		t.Fatalf("expected bucket 1 duration 5.0, got %q", lines[1])
+	}
+	// Full profile still 10s.
+	if strings.TrimSpace(lines[2]) != "10.0" {
+		t.Fatalf("expected full profile duration 10.0, got %q", lines[2])
+	}
+}
+
+func TestSplitProfileDuration(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A", "B"}, lines: []uint32{0, 0}, count: 6, thread: "t1"},
+	})
+	timed := &parsedJFR{
+		eventCounts:   map[string]int{"cpu": 6},
+		stacksByEvent: map[string]*stackFile{"cpu": sf},
+		timedEvents: map[string][]timedEvent{
+			"cpu": {
+				{offsetNanos: 1e9, stackKey: "A;B", frames: []string{"A", "B"}, lines: []uint32{0, 0}, thread: "t1", weight: 2},
+				{offsetNanos: 3e9, stackKey: "A;B", frames: []string{"A", "B"}, lines: []uint32{0, 0}, thread: "t1", weight: 2},
+				{offsetNanos: 7e9, stackKey: "A;B", frames: []string{"A", "B"}, lines: []uint32{0, 0}, thread: "t1", weight: 2},
+			},
+		},
+		spanNanos: 10e9,
+	}
+	p := newStarlarkProfile(sf, timed, "cpu", "test.jfr")
+	p.timedParsed = timed
+
+	out := captureOutput(func() {
+		code := runScript(`
+parts = p.split([5.0])
+# parts[0]: [0, 5s) = 5s, parts[1]: [5s, 10s) = 5s
+print(parts[0].duration)
+print(parts[1].duration)
+print(p.duration)
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 lines, got %d: %q", len(lines), out)
+	}
+	if strings.TrimSpace(lines[0]) != "5.0" {
+		t.Fatalf("expected parts[0] duration 5.0, got %q", lines[0])
+	}
+	if strings.TrimSpace(lines[1]) != "5.0" {
+		t.Fatalf("expected parts[1] duration 5.0, got %q", lines[1])
+	}
+	if strings.TrimSpace(lines[2]) != "10.0" {
+		t.Fatalf("expected full profile duration 10.0, got %q", lines[2])
+	}
+}
+
+func TestFilterInheritsScopedDuration(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A", "B"}, lines: []uint32{0, 0}, count: 3, thread: "t1"},
+		{frames: []string{"C", "D"}, lines: []uint32{0, 0}, count: 3, thread: "t1"},
+	})
+	timed := &parsedJFR{
+		eventCounts:   map[string]int{"cpu": 6},
+		stacksByEvent: map[string]*stackFile{"cpu": sf},
+		timedEvents: map[string][]timedEvent{
+			"cpu": {
+				{offsetNanos: 1e9, stackKey: "A;B", frames: []string{"A", "B"}, lines: []uint32{0, 0}, thread: "t1", weight: 3},
+				{offsetNanos: 2e9, stackKey: "C;D", frames: []string{"C", "D"}, lines: []uint32{0, 0}, thread: "t1", weight: 3},
+			},
+		},
+		spanNanos: 10e9,
+	}
+	p := newStarlarkProfile(sf, timed, "cpu", "test.jfr")
+	p.timedParsed = timed
+
+	out := captureOutput(func() {
+		code := runScript(`
+parts = p.split([5.0])
+# parts[0] duration = 5.0
+filtered = parts[0].filter(lambda s: s.has("A"))
+print(filtered.duration)
+print(parts[0].duration)
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 lines, got %d: %q", len(lines), out)
+	}
+	// Filtered inherits parent's scoped duration.
+	if strings.TrimSpace(lines[0]) != "5.0" {
+		t.Fatalf("expected filtered duration 5.0, got %q", lines[0])
+	}
+	if strings.TrimSpace(lines[1]) != "5.0" {
+		t.Fatalf("expected parts[0] duration 5.0, got %q", lines[1])
+	}
+}
+
+func TestGroupByInheritsScopedDuration(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A", "B"}, lines: []uint32{0, 0}, count: 3, thread: "t1"},
+		{frames: []string{"C", "D"}, lines: []uint32{0, 0}, count: 3, thread: "t2"},
+	})
+	timed := &parsedJFR{
+		eventCounts:   map[string]int{"cpu": 6},
+		stacksByEvent: map[string]*stackFile{"cpu": sf},
+		timedEvents: map[string][]timedEvent{
+			"cpu": {
+				{offsetNanos: 1e9, stackKey: "A;B", frames: []string{"A", "B"}, lines: []uint32{0, 0}, thread: "t1", weight: 3},
+				{offsetNanos: 2e9, stackKey: "C;D", frames: []string{"C", "D"}, lines: []uint32{0, 0}, thread: "t2", weight: 3},
+			},
+		},
+		spanNanos: 10e9,
+	}
+	p := newStarlarkProfile(sf, timed, "cpu", "test.jfr")
+	p.timedParsed = timed
+
+	out := captureOutput(func() {
+		code := runScript(`
+parts = p.split([5.0])
+groups = parts[0].group_by(lambda s: s.thread)
+for name in sorted(groups.keys()):
+    print(groups[name].duration)
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	for i, line := range lines {
+		if strings.TrimSpace(line) != "5.0" {
+			t.Fatalf("group %d: expected duration 5.0, got %q", i, line)
+		}
+	}
+}
+
+func TestNoIdleInheritsScopedDuration(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A", "B"}, lines: []uint32{0, 0}, count: 3, thread: "t1"},
+		{frames: []string{"A", "java/lang/Object.wait"}, lines: []uint32{0, 0}, count: 2, thread: "t1"},
+	})
+	timed := &parsedJFR{
+		eventCounts:   map[string]int{"cpu": 5},
+		stacksByEvent: map[string]*stackFile{"cpu": sf},
+		timedEvents: map[string][]timedEvent{
+			"cpu": {
+				{offsetNanos: 1e9, stackKey: "A;B", frames: []string{"A", "B"}, lines: []uint32{0, 0}, thread: "t1", weight: 3},
+				{offsetNanos: 2e9, stackKey: "A;java/lang/Object.wait", frames: []string{"A", "java/lang/Object.wait"}, lines: []uint32{0, 0}, thread: "t1", weight: 2},
+			},
+		},
+		spanNanos: 10e9,
+	}
+	p := newStarlarkProfile(sf, timed, "cpu", "test.jfr")
+	p.timedParsed = timed
+
+	out := captureOutput(func() {
+		code := runScript(`
+parts = p.split([5.0])
+ni = parts[0].no_idle()
+print(ni.duration)
+print(parts[0].duration)
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 lines, got %d: %q", len(lines), out)
+	}
+	if strings.TrimSpace(lines[0]) != "5.0" {
+		t.Fatalf("expected no_idle duration 5.0, got %q", lines[0])
+	}
+	if strings.TrimSpace(lines[1]) != "5.0" {
+		t.Fatalf("expected parts[0] duration 5.0, got %q", lines[1])
+	}
+}
+
+func TestMultiSplitDuration(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A", "B"}, lines: []uint32{0, 0}, count: 6, thread: "t1"},
+	})
+	timed := &parsedJFR{
+		eventCounts:   map[string]int{"cpu": 6},
+		stacksByEvent: map[string]*stackFile{"cpu": sf},
+		timedEvents: map[string][]timedEvent{
+			"cpu": {
+				{offsetNanos: 1e9, stackKey: "A;B", frames: []string{"A", "B"}, lines: []uint32{0, 0}, thread: "t1", weight: 2},
+				{offsetNanos: 4e9, stackKey: "A;B", frames: []string{"A", "B"}, lines: []uint32{0, 0}, thread: "t1", weight: 2},
+				{offsetNanos: 8e9, stackKey: "A;B", frames: []string{"A", "B"}, lines: []uint32{0, 0}, thread: "t1", weight: 2},
+			},
+		},
+		spanNanos: 12e9,
+	}
+	p := newStarlarkProfile(sf, timed, "cpu", "test.jfr")
+	p.timedParsed = timed
+
+	out := captureOutput(func() {
+		code := runScript(`
+# Split at 3s and 9s → 3 segments: [0,3s)=3s, [3s,9s)=6s, [9s,12s)=3s
+parts = p.split([3.0, 9.0])
+for part in parts:
+    print(part.duration)
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 lines, got %d: %q", len(lines), out)
+	}
+	expected := []string{"3.0", "6.0", "3.0"}
+	for i, exp := range expected {
+		if strings.TrimSpace(lines[i]) != exp {
+			t.Fatalf("part %d: expected %q, got %q", i, exp, lines[i])
+		}
+	}
+}
+
+func TestComposedSplit(t *testing.T) {
+	// Composed split: split a profile, then split a child.
+	// Times must be relative to the child's scope, not the global recording.
+	sf := makeStackFile([]stack{
+		{frames: []string{"A", "B"}, lines: []uint32{0, 0}, count: 6, thread: "t1"},
+	})
+	timed := &parsedJFR{
+		eventCounts:   map[string]int{"cpu": 6},
+		stacksByEvent: map[string]*stackFile{"cpu": sf},
+		timedEvents: map[string][]timedEvent{
+			"cpu": {
+				// 2 events in [0, 4s)
+				{offsetNanos: 1e9, stackKey: "A;B", frames: []string{"A", "B"}, lines: []uint32{0, 0}, thread: "t1", weight: 1},
+				{offsetNanos: 3e9, stackKey: "A;B", frames: []string{"A", "B"}, lines: []uint32{0, 0}, thread: "t1", weight: 1},
+				// 4 events in [4s, 10s)
+				{offsetNanos: 5e9, stackKey: "A;B", frames: []string{"A", "B"}, lines: []uint32{0, 0}, thread: "t1", weight: 1},
+				{offsetNanos: 6e9, stackKey: "A;B", frames: []string{"A", "B"}, lines: []uint32{0, 0}, thread: "t1", weight: 1},
+				{offsetNanos: 8e9, stackKey: "A;B", frames: []string{"A", "B"}, lines: []uint32{0, 0}, thread: "t1", weight: 1},
+				{offsetNanos: 9e9, stackKey: "A;B", frames: []string{"A", "B"}, lines: []uint32{0, 0}, thread: "t1", weight: 1},
+			},
+		},
+		spanNanos: 10e9,
+	}
+	p := newStarlarkProfile(sf, timed, "cpu", "test.jfr")
+	p.timedParsed = timed
+
+	out := captureOutput(func() {
+		code := runScript(`
+# First split at 4s: parts[0]=[0,4s) 2 samples, parts[1]=[4s,10s) 4 samples
+parts = p.split([4.0])
+print(parts[0].samples)
+print(parts[1].samples)
+print(parts[1].duration)
+
+# Second split on parts[1]: split at 3.0s RELATIVE to parts[1]
+# parts[1] covers [4s,10s), so 3.0s relative = 7s global
+# sub[0]=[4s,7s) should have events at 5s,6s → 2 samples, duration 3.0
+# sub[1]=[7s,10s) should have events at 8s,9s → 2 samples, duration 3.0
+sub = parts[1].split([3.0])
+print(len(sub))
+print(sub[0].samples)
+print(sub[1].samples)
+print(sub[0].duration)
+print(sub[1].duration)
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	expected := []string{
+		"2",   // parts[0].samples
+		"4",   // parts[1].samples
+		"6.0", // parts[1].duration = 10-4 = 6s
+		"2",   // len(sub)
+		"2",   // sub[0].samples (events at 5s, 6s)
+		"2",   // sub[1].samples (events at 8s, 9s)
+		"3.0", // sub[0].duration
+		"3.0", // sub[1].duration
+	}
+	if len(lines) != len(expected) {
+		t.Fatalf("expected %d lines, got %d: %q", len(expected), len(lines), out)
+	}
+	for i, exp := range expected {
+		if strings.TrimSpace(lines[i]) != exp {
+			t.Fatalf("line %d: expected %q, got %q", i, exp, lines[i])
+		}
+	}
+}
+
+func TestComposedSplitTriple(t *testing.T) {
+	// Triple composition: split → split → split must work correctly.
+	sf := makeStackFile([]stack{
+		{frames: []string{"A"}, lines: []uint32{0}, count: 8, thread: "t1"},
+	})
+	timed := &parsedJFR{
+		eventCounts:   map[string]int{"cpu": 8},
+		stacksByEvent: map[string]*stackFile{"cpu": sf},
+		timedEvents: map[string][]timedEvent{
+			"cpu": {
+				{offsetNanos: 1e9, stackKey: "A", frames: []string{"A"}, lines: []uint32{0}, thread: "t1", weight: 1},
+				{offsetNanos: 2e9, stackKey: "A", frames: []string{"A"}, lines: []uint32{0}, thread: "t1", weight: 1},
+				{offsetNanos: 3e9, stackKey: "A", frames: []string{"A"}, lines: []uint32{0}, thread: "t1", weight: 1},
+				{offsetNanos: 5e9, stackKey: "A", frames: []string{"A"}, lines: []uint32{0}, thread: "t1", weight: 1},
+				{offsetNanos: 6e9, stackKey: "A", frames: []string{"A"}, lines: []uint32{0}, thread: "t1", weight: 1},
+				{offsetNanos: 7e9, stackKey: "A", frames: []string{"A"}, lines: []uint32{0}, thread: "t1", weight: 1},
+				{offsetNanos: 9e9, stackKey: "A", frames: []string{"A"}, lines: []uint32{0}, thread: "t1", weight: 1},
+				{offsetNanos: 11e9, stackKey: "A", frames: []string{"A"}, lines: []uint32{0}, thread: "t1", weight: 1},
+			},
+		},
+		spanNanos: 12e9,
+	}
+	p := newStarlarkProfile(sf, timed, "cpu", "test.jfr")
+	p.timedParsed = timed
+
+	out := captureOutput(func() {
+		code := runScript(`
+# split at 4s: parts[1] = [4s, 12s) = 8s, 5 events
+parts = p.split([4.0])
+# split parts[1] at 4s relative = 8s global: mid[1] = [8s, 12s) = 4s, 2 events
+mid = parts[1].split([4.0])
+# split mid[1] at 2s relative = 10s global: inner[0] = [8s, 10s) = 2s, 1 event (9s)
+inner = mid[1].split([2.0])
+print(inner[0].samples)
+print(inner[1].samples)
+print(inner[0].duration)
+print(inner[1].duration)
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	expected := []string{"1", "1", "2.0", "2.0"}
+	if len(lines) != len(expected) {
+		t.Fatalf("expected %d lines, got %d: %q", len(expected), len(lines), out)
+	}
+	for i, exp := range expected {
+		if strings.TrimSpace(lines[i]) != exp {
+			t.Fatalf("line %d: expected %q, got %q", i, exp, lines[i])
+		}
+	}
+}
+
+func TestBucketSplit(t *testing.T) {
+	// Split on a bucket-derived profile: times must be relative to bucket window.
+	sf := makeStackFile([]stack{
+		{frames: []string{"A"}, lines: []uint32{0}, count: 4, thread: "t1"},
+	})
+	timed := &parsedJFR{
+		eventCounts:   map[string]int{"cpu": 4},
+		stacksByEvent: map[string]*stackFile{"cpu": sf},
+		timedEvents: map[string][]timedEvent{
+			"cpu": {
+				{offsetNanos: 1e9, stackKey: "A", frames: []string{"A"}, lines: []uint32{0}, thread: "t1", weight: 1},
+				{offsetNanos: 2e9, stackKey: "A", frames: []string{"A"}, lines: []uint32{0}, thread: "t1", weight: 1},
+				{offsetNanos: 6e9, stackKey: "A", frames: []string{"A"}, lines: []uint32{0}, thread: "t1", weight: 1},
+				{offsetNanos: 8e9, stackKey: "A", frames: []string{"A"}, lines: []uint32{0}, thread: "t1", weight: 1},
+			},
+		},
+		spanNanos: 10e9,
+	}
+	p := newStarlarkProfile(sf, timed, "cpu", "test.jfr")
+	p.timedParsed = timed
+
+	out := captureOutput(func() {
+		code := runScript(`
+# 2 buckets: [0,5s) and [5s,10s)
+buckets = p.timeline(buckets=2)
+bp = buckets[1].profile  # covers [5s, 10s), has events at 6s, 8s
+# Split at 2s relative to bucket = 7s global
+sub = bp.split([2.0])
+print(sub[0].samples)  # [5s,7s): event at 6s → 1
+print(sub[1].samples)  # [7s,10s): event at 8s → 1
+print(sub[0].duration) # 2.0
+print(sub[1].duration) # 3.0
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	expected := []string{"1", "1", "2.0", "3.0"}
+	if len(lines) != len(expected) {
+		t.Fatalf("expected %d lines, got %d: %q", len(expected), len(lines), out)
+	}
+	for i, exp := range expected {
+		if strings.TrimSpace(lines[i]) != exp {
+			t.Fatalf("line %d: expected %q, got %q", i, exp, lines[i])
+		}
+	}
+}
+
+func TestProfileDurationJFR(t *testing.T) {
+	out := captureOutput(func() {
+		code := runScript(fmt.Sprintf(`
+p = open(%q)
+d = p.duration
+print(d > 0)
+`, scriptFixture("cpu.jfr")), "", nil, testTimeout)
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	if strings.TrimSpace(out) != "True" {
+		t.Fatalf("expected JFR profile to have positive duration, got %q", out)
+	}
+}
+
+func TestZeroWidthSplitDuration(t *testing.T) {
+	// split([0.0]) should produce a zero-duration first segment.
+	sf := makeStackFile([]stack{
+		{frames: []string{"A"}, lines: []uint32{0}, count: 1},
+		{frames: []string{"B"}, lines: []uint32{0}, count: 2},
+	})
+	timed := &parsedJFR{
+		spanNanos:     10e9,
+		eventCounts:   map[string]int{"cpu": 3},
+		stacksByEvent: map[string]*stackFile{"cpu": sf},
+		timedEvents: map[string][]timedEvent{
+			"cpu": {
+				{offsetNanos: 2e9, stackKey: "A", frames: []string{"A"}, lines: []uint32{0}, weight: 1},
+				{offsetNanos: 5e9, stackKey: "B", frames: []string{"B"}, lines: []uint32{0}, weight: 1},
+				{offsetNanos: 8e9, stackKey: "B", frames: []string{"B"}, lines: []uint32{0}, weight: 1},
+			},
+		},
+	}
+	p := newStarlarkProfile(sf, timed, "cpu", "test.jfr")
+	p.timedParsed = timed
+	out := captureOutput(func() {
+		code := runScript(`
+parts = p.split([0.0])
+print(parts[0].duration)
+print(parts[0].samples)
+print(parts[1].duration)
+print(parts[1].samples)
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("expected 4 lines, got %d: %q", len(lines), out)
+	}
+	if lines[0] != "0.0" {
+		t.Fatalf("expected zero-width first segment duration 0.0, got %q", lines[0])
+	}
+	if lines[1] != "0" {
+		t.Fatalf("expected 0 samples in zero-width segment, got %q", lines[1])
+	}
+	if lines[2] != "10.0" {
+		t.Fatalf("expected second segment duration 10.0, got %q", lines[2])
+	}
+	if lines[3] != "3" {
+		t.Fatalf("expected 3 samples in second segment, got %q", lines[3])
+	}
+}
+
+func TestSplitExceedsScope(t *testing.T) {
+	// split times beyond the scope duration must be rejected.
+	sf := makeStackFile([]stack{
+		{frames: []string{"A"}, lines: []uint32{0}, count: 1},
+	})
+	timed := &parsedJFR{
+		spanNanos:     5e9,
+		eventCounts:   map[string]int{"cpu": 1},
+		stacksByEvent: map[string]*stackFile{"cpu": sf},
+		timedEvents: map[string][]timedEvent{
+			"cpu": {
+				{offsetNanos: 1e9, stackKey: "A", frames: []string{"A"}, lines: []uint32{0}, weight: 1},
+			},
+		},
+	}
+	p := newStarlarkProfile(sf, timed, "cpu", "test.jfr")
+	p.timedParsed = timed
+	stderr := captureStream(&os.Stderr, func() {
+		code := runScript(`p.split([100.0])`, "", nil, testTimeout, withPredeclared("p", p))
+		if code == 0 {
+			t.Fatalf("expected error for out-of-range split time")
+		}
+	})
+	if !strings.Contains(stderr, "exceeds scope duration") {
+		t.Fatalf("expected 'exceeds scope duration' error, got %q", stderr)
+	}
+}
+
+func TestRoundLargeDecimals(t *testing.T) {
+	// Large decimals must not produce NaN.
+	out := captureOutput(func() {
+		code := runScript(`print(round(1.23, 1000))`, "", nil, testTimeout)
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	if strings.Contains(out, "nan") || strings.Contains(out, "NaN") {
+		t.Fatalf("round with large decimals produced NaN: %q", out)
+	}
+	if strings.TrimSpace(out) != "1.23" {
+		t.Fatalf("expected 1.23, got %q", out)
+	}
+}
+
+func TestSplitDurationStrings(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A", "B"}, lines: []uint32{0, 0}, count: 9, thread: "t1"},
+	})
+	timed := &parsedJFR{
+		eventCounts:   map[string]int{"cpu": 9},
+		stacksByEvent: map[string]*stackFile{"cpu": sf},
+		timedEvents: map[string][]timedEvent{
+			"cpu": {
+				{offsetNanos: 1e9, stackKey: "A;B", frames: []string{"A", "B"}, lines: []uint32{0, 0}, thread: "t1", weight: 3},
+				{offsetNanos: 6e9, stackKey: "A;B", frames: []string{"A", "B"}, lines: []uint32{0, 0}, thread: "t1", weight: 3},
+				{offsetNanos: 12e9, stackKey: "A;B", frames: []string{"A", "B"}, lines: []uint32{0, 0}, thread: "t1", weight: 3},
+			},
+		},
+		spanNanos: 15e9,
+	}
+	p := newStarlarkProfile(sf, timed, "cpu", "test.jfr")
+	p.timedParsed = timed
+
+	out := captureOutput(func() {
+		code := runScript(`
+parts = p.split(["5s", "10s"])
+print(len(parts))
+print(parts[0].samples)
+print(parts[1].samples)
+print(parts[2].samples)
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("expected 4 lines, got %d: %q", len(lines), out)
+	}
+	if strings.TrimSpace(lines[0]) != "3" {
+		t.Fatalf("expected 3 parts, got %q", lines[0])
+	}
+	if strings.TrimSpace(lines[1]) != "3" {
+		t.Fatalf("expected 3 samples in first part, got %q", lines[1])
+	}
+	if strings.TrimSpace(lines[2]) != "3" {
+		t.Fatalf("expected 3 samples in second part, got %q", lines[2])
+	}
+	if strings.TrimSpace(lines[3]) != "3" {
+		t.Fatalf("expected 3 samples in third part, got %q", lines[3])
+	}
+}
+
+func TestSplitMixedTypes(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A"}, lines: []uint32{0}, count: 6, thread: "t1"},
+	})
+	timed := &parsedJFR{
+		eventCounts:   map[string]int{"cpu": 6},
+		stacksByEvent: map[string]*stackFile{"cpu": sf},
+		timedEvents: map[string][]timedEvent{
+			"cpu": {
+				{offsetNanos: 2e9, stackKey: "A", frames: []string{"A"}, lines: []uint32{0}, thread: "t1", weight: 2},
+				{offsetNanos: 7e9, stackKey: "A", frames: []string{"A"}, lines: []uint32{0}, thread: "t1", weight: 2},
+				{offsetNanos: 12e9, stackKey: "A", frames: []string{"A"}, lines: []uint32{0}, thread: "t1", weight: 2},
+			},
+		},
+		spanNanos: 15e9,
+	}
+	p := newStarlarkProfile(sf, timed, "cpu", "test.jfr")
+	p.timedParsed = timed
+
+	out := captureOutput(func() {
+		code := runScript(`
+parts = p.split([5.0, "10s"])
+print(len(parts))
+print(parts[0].samples)
+print(parts[1].samples)
+print(parts[2].samples)
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("expected 4 lines, got %d: %q", len(lines), out)
+	}
+	if strings.TrimSpace(lines[0]) != "3" {
+		t.Fatalf("expected 3 parts, got %q", lines[0])
+	}
+	if strings.TrimSpace(lines[1]) != "2" {
+		t.Fatalf("expected 2 samples in first part, got %q", lines[1])
+	}
+	if strings.TrimSpace(lines[2]) != "2" {
+		t.Fatalf("expected 2 samples in second part, got %q", lines[2])
+	}
+	if strings.TrimSpace(lines[3]) != "2" {
+		t.Fatalf("expected 2 samples in third part, got %q", lines[3])
+	}
+}
+
+func TestSplitInvalidDuration(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A"}, lines: []uint32{0}, count: 1, thread: "t1"},
+	})
+	timed := &parsedJFR{
+		eventCounts:   map[string]int{"cpu": 1},
+		stacksByEvent: map[string]*stackFile{"cpu": sf},
+		timedEvents: map[string][]timedEvent{
+			"cpu": {
+				{offsetNanos: 1e9, stackKey: "A", frames: []string{"A"}, lines: []uint32{0}, thread: "t1", weight: 1},
+			},
+		},
+		spanNanos: 10e9,
+	}
+	p := newStarlarkProfile(sf, timed, "cpu", "test.jfr")
+	p.timedParsed = timed
+
+	stderr := captureStream(&os.Stderr, func() {
+		code := runScript(`p.split(["bogus"])`, "", nil, testTimeout, withPredeclared("p", p))
+		if code == 0 {
+			t.Fatalf("expected error for invalid duration string")
+		}
+	})
+	if !strings.Contains(stderr, "invalid duration") {
+		t.Fatalf("expected 'invalid duration' error, got %q", stderr)
+	}
+}
+
+func TestSplitNegativeDuration(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A"}, lines: []uint32{0}, count: 1, thread: "t1"},
+	})
+	timed := &parsedJFR{
+		eventCounts:   map[string]int{"cpu": 1},
+		stacksByEvent: map[string]*stackFile{"cpu": sf},
+		timedEvents: map[string][]timedEvent{
+			"cpu": {
+				{offsetNanos: 1e9, stackKey: "A", frames: []string{"A"}, lines: []uint32{0}, thread: "t1", weight: 1},
+			},
+		},
+		spanNanos: 10e9,
+	}
+	p := newStarlarkProfile(sf, timed, "cpu", "test.jfr")
+	p.timedParsed = timed
+
+	stderr := captureStream(&os.Stderr, func() {
+		code := runScript(`p.split(["-1s"])`, "", nil, testTimeout, withPredeclared("p", p))
+		if code == 0 {
+			t.Fatalf("expected error for negative duration string")
+		}
+	})
+	if !strings.Contains(stderr, "non-negative") {
+		t.Fatalf("expected 'non-negative' error, got %q", stderr)
+	}
+}
+
+func TestSplitZeroSpanMetadata(t *testing.T) {
+	// spanNanos == 0 simulates missing chunk-header span metadata.
+	// split must still work, deriving scope from event offsets.
+	sf := makeStackFile([]stack{
+		{frames: []string{"A"}, lines: []uint32{0}, count: 4, thread: "t1"},
+	})
+	timed := &parsedJFR{
+		eventCounts:   map[string]int{"cpu": 4},
+		stacksByEvent: map[string]*stackFile{"cpu": sf},
+		timedEvents: map[string][]timedEvent{
+			"cpu": {
+				{offsetNanos: 2e9, stackKey: "A", frames: []string{"A"}, lines: []uint32{0}, thread: "t1", weight: 2},
+				{offsetNanos: 8e9, stackKey: "A", frames: []string{"A"}, lines: []uint32{0}, thread: "t1", weight: 2},
+			},
+		},
+		spanNanos: 0, // missing span
+	}
+	p := newStarlarkProfile(sf, timed, "cpu", "test.jfr")
+	p.timedParsed = timed
+
+	out := captureOutput(func() {
+		code := runScript(`
+parts = p.split([5.0])
+print(len(parts))
+print(parts[0].samples)
+print(parts[1].samples)
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 lines, got %d: %q", len(lines), out)
+	}
+	if strings.TrimSpace(lines[0]) != "2" {
+		t.Fatalf("expected 2 parts, got %q", lines[0])
+	}
+	if strings.TrimSpace(lines[1]) != "2" {
+		t.Fatalf("expected 2 samples in first part, got %q", lines[1])
+	}
+	if strings.TrimSpace(lines[2]) != "2" {
+		t.Fatalf("expected 2 samples in second part, got %q", lines[2])
+	}
+}
+
+func TestSplitZeroWidthScopedRejects(t *testing.T) {
+	// A zero-width scoped profile (scopedSpanNanos == 0) must reject positive split times.
+	sf := makeStackFile(nil)
+	timed := &parsedJFR{
+		eventCounts:   map[string]int{"cpu": 0},
+		stacksByEvent: map[string]*stackFile{"cpu": sf},
+		timedEvents:   map[string][]timedEvent{"cpu": {}},
+		spanNanos:     10e9,
+	}
+	p := newStarlarkProfile(sf, timed, "cpu", "test.jfr")
+	p.timedParsed = timed
+	p.isScoped = true
+	p.scopedOriginNanos = 5e9
+	p.scopedSpanNanos = 0
+
+	stderr := captureStream(&os.Stderr, func() {
+		code := runScript(`p.split([1.0])`, "", nil, testTimeout, withPredeclared("p", p))
+		if code == 0 {
+			t.Fatalf("expected error for split on zero-width scoped profile")
+		}
+	})
+	if !strings.Contains(stderr, "exceeds scope duration") {
+		t.Fatalf("expected 'exceeds scope duration' error, got %q", stderr)
+	}
+}
+
+func TestProfileStartEnd(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A"}, lines: []uint32{0}, count: 5, thread: "t1"},
+	})
+	timed := &parsedJFR{
+		eventCounts:   map[string]int{"cpu": 5},
+		stacksByEvent: map[string]*stackFile{"cpu": sf},
+		spanNanos:     10e9,
+	}
+	p := newStarlarkProfile(sf, timed, "cpu", "test.jfr")
+
+	out := captureOutput(func() {
+		code := runScript(`
+print(p.start)
+print(p.end)
+print(p.duration)
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 lines, got %d: %q", len(lines), out)
+	}
+	if strings.TrimSpace(lines[0]) != "0.0" {
+		t.Fatalf("expected start=0.0, got %q", lines[0])
+	}
+	if strings.TrimSpace(lines[1]) != "10.0" {
+		t.Fatalf("expected end=10.0, got %q", lines[1])
+	}
+	if strings.TrimSpace(lines[2]) != "10.0" {
+		t.Fatalf("expected duration=10.0, got %q", lines[2])
+	}
+}
+
+func TestProfileStartEndScoped(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A"}, lines: []uint32{0}, count: 6, thread: "t1"},
+	})
+	timed := &parsedJFR{
+		eventCounts:   map[string]int{"cpu": 6},
+		stacksByEvent: map[string]*stackFile{"cpu": sf},
+		timedEvents: map[string][]timedEvent{
+			"cpu": {
+				{offsetNanos: 1e9, stackKey: "A", frames: []string{"A"}, lines: []uint32{0}, thread: "t1", weight: 2},
+				{offsetNanos: 3e9, stackKey: "A", frames: []string{"A"}, lines: []uint32{0}, thread: "t1", weight: 2},
+				{offsetNanos: 7e9, stackKey: "A", frames: []string{"A"}, lines: []uint32{0}, thread: "t1", weight: 2},
+			},
+		},
+		spanNanos: 10e9,
+	}
+	p := newStarlarkProfile(sf, timed, "cpu", "test.jfr")
+	p.timedParsed = timed
+
+	out := captureOutput(func() {
+		code := runScript(`
+parts = p.split(["5s"])
+print(parts[0].start)
+print(parts[0].end)
+print(parts[1].start)
+print(parts[1].end)
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("expected 4 lines, got %d: %q", len(lines), out)
+	}
+	if strings.TrimSpace(lines[0]) != "0.0" {
+		t.Fatalf("expected parts[0].start=0.0, got %q", lines[0])
+	}
+	if strings.TrimSpace(lines[1]) != "5.0" {
+		t.Fatalf("expected parts[0].end=5.0, got %q", lines[1])
+	}
+	if strings.TrimSpace(lines[2]) != "5.0" {
+		t.Fatalf("expected parts[1].start=5.0, got %q", lines[2])
+	}
+	if strings.TrimSpace(lines[3]) != "10.0" {
+		t.Fatalf("expected parts[1].end=10.0, got %q", lines[3])
+	}
+}
+
+func TestProfileStartEndCollapsed(t *testing.T) {
+	out := captureOutput(func() {
+		code := runScript(fmt.Sprintf(`
+p = open(%q)
+print(p.start)
+print(p.end)
+`, scriptFixture("perf.collapsed")), "", nil, testTimeout)
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 lines, got %d: %q", len(lines), out)
+	}
+	if strings.TrimSpace(lines[0]) != "0.0" {
+		t.Fatalf("expected start=0.0, got %q", lines[0])
+	}
+	if strings.TrimSpace(lines[1]) != "0.0" {
+		t.Fatalf("expected end=0.0, got %q", lines[1])
+	}
+}
+
+func TestBucketProfileStartEnd(t *testing.T) {
+	sf := makeStackFile([]stack{
+		{frames: []string{"A"}, lines: []uint32{0}, count: 4, thread: "t1"},
+	})
+	timed := &parsedJFR{
+		eventCounts:   map[string]int{"cpu": 4},
+		stacksByEvent: map[string]*stackFile{"cpu": sf},
+		timedEvents: map[string][]timedEvent{
+			"cpu": {
+				{offsetNanos: 1e9, stackKey: "A", frames: []string{"A"}, lines: []uint32{0}, thread: "t1", weight: 2},
+				{offsetNanos: 6e9, stackKey: "A", frames: []string{"A"}, lines: []uint32{0}, thread: "t1", weight: 2},
+			},
+		},
+		spanNanos: 10e9,
+	}
+	p := newStarlarkProfile(sf, timed, "cpu", "test.jfr")
+	p.timedParsed = timed
+
+	out := captureOutput(func() {
+		code := runScript(`
+buckets = p.timeline(resolution="5s")
+b = buckets[0]
+bp = b.profile
+print(b.start)
+print(b.end)
+print(bp.start)
+print(bp.end)
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("expected 4 lines, got %d: %q", len(lines), out)
+	}
+	// bucket.start and bucket.profile.start should match
+	if strings.TrimSpace(lines[0]) != strings.TrimSpace(lines[2]) {
+		t.Fatalf("expected bucket.start=%q to equal profile.start=%q", lines[0], lines[2])
+	}
+	// bucket.end and bucket.profile.end should match
+	if strings.TrimSpace(lines[1]) != strings.TrimSpace(lines[3]) {
+		t.Fatalf("expected bucket.end=%q to equal profile.end=%q", lines[1], lines[3])
 	}
 }

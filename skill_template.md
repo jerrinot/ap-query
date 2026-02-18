@@ -109,4 +109,8 @@ compound predicates, multi-file comparison, CI budget enforcement.
 Run `{{AP_QUERY_PATH}} script --help` for the full scripting API reference (types, functions, examples).
 
 Key scripting APIs: `Profile.no_idle()` filters idle leaf frames (scripting equivalent of `--no-idle`);
-`Bucket.label` returns the formatted time range string for timeline buckets.
+`Bucket.label` returns the formatted time range string for timeline buckets;
+`Stack.thread_has(pattern)` substring-matches on thread name; `round(x, decimals=0)` rounds floats;
+`Profile.summary()` returns a one-line summary string;
+`Profile.start`/`.end` return scope boundaries in seconds (0/duration for root profiles, matching split/bucket boundaries for scoped profiles);
+`Profile.split()` accepts duration strings (`"5s"`, `"1m30s"`) alongside float seconds.

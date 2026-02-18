@@ -15,15 +15,18 @@ import (
 // ---------------------------------------------------------------------------
 
 type starlarkProfile struct {
-	sf           *stackFile
-	parsed       *parsedJFR
-	timedParsed  *parsedJFR   // lazy re-parse with timestamps
-	scopedEvents []timedEvent // non-nil for split-derived profiles (preserves temporal identity)
-	event        string
-	events       []string
-	path         string
-	frozen       bool
-	stackList    *starlark.List // cached
+	sf                *stackFile
+	parsed            *parsedJFR
+	timedParsed       *parsedJFR   // lazy re-parse with timestamps
+	scopedEvents      []timedEvent // non-nil for split-derived profiles (preserves temporal identity)
+	event             string
+	events            []string
+	path              string
+	frozen            bool
+	scopedOriginNanos int64          // global offset of scope start (0 for root)
+	scopedSpanNanos   int64          // duration of scope window in nanos
+	isScoped          bool           // true for bucket/split-derived profiles
+	stackList         *starlark.List // cached
 }
 
 func newStarlarkProfile(sf *stackFile, parsed *parsedJFR, event, path string) *starlarkProfile {
@@ -42,7 +45,28 @@ func newStarlarkProfile(sf *stackFile, parsed *parsedJFR, event, path string) *s
 	}
 }
 
-func (p *starlarkProfile) String() string        { return fmt.Sprintf("<Profile %s>", p.path) }
+func (p *starlarkProfile) scopeEnd(fallback int64) int64 {
+	if p.isScoped {
+		return p.scopedOriginNanos + p.scopedSpanNanos
+	}
+	return fallback
+}
+
+func (p *starlarkProfile) effectiveDuration() float64 {
+	if p.isScoped {
+		return float64(p.scopedSpanNanos) / 1e9
+	}
+	if p.parsed != nil && p.parsed.spanNanos > 0 {
+		return float64(p.parsed.spanNanos) / 1e9
+	}
+	return 0
+}
+
+func (p *starlarkProfile) summaryString() string {
+	return fmt.Sprintf("%s: %d samples, %.1fs, %d stacks", p.event, p.sf.totalSamples, p.effectiveDuration(), len(p.sf.stacks))
+}
+
+func (p *starlarkProfile) String() string        { return p.summaryString() }
 func (p *starlarkProfile) Type() string          { return "Profile" }
 func (p *starlarkProfile) Freeze()               { p.frozen = true }
 func (p *starlarkProfile) Truth() starlark.Bool  { return starlark.True }
@@ -69,10 +93,17 @@ func (p *starlarkProfile) Attr(name string) (starlark.Value, error) {
 	case "samples":
 		return starlark.MakeInt(p.sf.totalSamples), nil
 	case "duration":
-		if p.parsed != nil && p.parsed.spanNanos > 0 {
-			return starlark.Float(float64(p.parsed.spanNanos) / 1e9), nil
+		return starlark.Float(p.effectiveDuration()), nil
+	case "start":
+		if p.isScoped {
+			return starlark.Float(float64(p.scopedOriginNanos) / 1e9), nil
 		}
 		return starlark.Float(0), nil
+	case "end":
+		if p.isScoped {
+			return starlark.Float(float64(p.scopedOriginNanos+p.scopedSpanNanos) / 1e9), nil
+		}
+		return starlark.Float(p.effectiveDuration()), nil
 	case "event":
 		return starlark.String(p.event), nil
 	case "events":
@@ -103,12 +134,14 @@ func (p *starlarkProfile) Attr(name string) (starlark.Value, error) {
 		return starlark.NewBuiltin("callers", p.methodCallers), nil
 	case "no_idle":
 		return starlark.NewBuiltin("no_idle", p.methodNoIdle), nil
+	case "summary":
+		return starlark.NewBuiltin("summary", p.methodSummary), nil
 	}
 	return nil, starlark.NoSuchAttrError(fmt.Sprintf("Profile has no .%s attribute", name))
 }
 
 func (p *starlarkProfile) AttrNames() []string {
-	return []string{"stacks", "samples", "duration", "event", "events", "path", "hot", "threads", "filter", "group_by", "timeline", "split", "tree", "trace", "callers", "no_idle"}
+	return []string{"stacks", "samples", "duration", "start", "end", "event", "events", "path", "hot", "threads", "filter", "group_by", "timeline", "split", "tree", "trace", "callers", "no_idle", "summary"}
 }
 
 func (p *starlarkProfile) methodHot(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
@@ -165,6 +198,9 @@ func (p *starlarkProfile) methodFilter(thread *starlark.Thread, b *starlark.Buil
 	child := newStarlarkProfile(newSf, p.parsed, p.event, p.path)
 	child.timedParsed = p.timedParsed
 	child.scopedEvents = p.scopedEvents
+	child.scopedOriginNanos = p.scopedOriginNanos
+	child.scopedSpanNanos = p.scopedSpanNanos
+	child.isScoped = p.isScoped
 	return child, nil
 }
 
@@ -201,6 +237,9 @@ func (p *starlarkProfile) methodGroupBy(thread *starlark.Thread, b *starlark.Bui
 		child := newStarlarkProfile(sf, p.parsed, p.event, p.path)
 		child.timedParsed = p.timedParsed
 		child.scopedEvents = p.scopedEvents
+		child.scopedOriginNanos = p.scopedOriginNanos
+		child.scopedSpanNanos = p.scopedSpanNanos
+		child.isScoped = p.isScoped
 		dict.SetKey(starlark.String(key), child)
 	}
 	return dict, nil
@@ -412,37 +451,74 @@ func (p *starlarkProfile) methodSplit(_ *starlark.Thread, b *starlark.Builtin, a
 		return nil, err
 	}
 	if timed == nil {
-		// Collapsed text: return single-element list with the full profile.
-		return starlark.NewList([]starlark.Value{p}), nil
+		return nil, fmt.Errorf("split: requires JFR data (collapsed text has no timestamps)")
 	}
+
+	events := p.resolveTimedEvents(timed)
 
 	// Parse and validate the split times.
 	n := timesList.Len()
 	splitNanos := make([]int64, n)
+	scopeEnd := p.scopeEnd(timed.spanNanos)
+	var scopeDurationNanos int64
+	if p.isScoped {
+		scopeDurationNanos = p.scopedSpanNanos
+	} else {
+		scopeDurationNanos = timed.spanNanos
+	}
+	// When span metadata is missing, derive from event range.
+	if scopeDurationNanos == 0 && !p.isScoped && len(events) > 0 {
+		var maxOffset int64
+		for i := range events {
+			if events[i].offsetNanos > maxOffset {
+				maxOffset = events[i].offsetNanos
+			}
+		}
+		scopeDurationNanos = maxOffset
+		scopeEnd = maxOffset
+	}
 	for i := 0; i < n; i++ {
 		v := timesList.Index(i)
-		f, ok := starlark.AsFloat(v)
-		if !ok {
-			return nil, fmt.Errorf("split: times must be floats, got %s", v.Type())
+		var f float64
+		if s, ok := v.(starlark.String); ok {
+			d, parseErr := time.ParseDuration(string(s))
+			if parseErr != nil {
+				return nil, fmt.Errorf("split: invalid duration %q at index %d: %v", string(s), i, parseErr)
+			}
+			if d < 0 {
+				return nil, fmt.Errorf("split: times must be non-negative, got %q at index %d", string(s), i)
+			}
+			f = d.Seconds()
+		} else if numF, ok := starlark.AsFloat(v); ok {
+			f = numF
+		} else {
+			return nil, fmt.Errorf("split: times must be floats or duration strings, got %s", v.Type())
 		}
 		if f < 0 {
 			return nil, fmt.Errorf("split: times must be non-negative, got %g at index %d", f, i)
 		}
 		nanos := int64(f * 1e9)
+		if nanos > scopeDurationNanos {
+			return nil, fmt.Errorf("split: time %g exceeds scope duration %g", f, float64(scopeDurationNanos)/1e9)
+		}
 		if i > 0 && nanos <= splitNanos[i-1] {
 			return nil, fmt.Errorf("split: times must be strictly increasing, got %g after %g", f, float64(splitNanos[i-1])/1e9)
 		}
 		splitNanos[i] = nanos
 	}
 
-	events := p.resolveTimedEvents(timed)
+	// Convert scope-relative split times to global nanos for event comparison.
+	globalSplitNanos := make([]int64, n)
+	for i, ns := range splitNanos {
+		globalSplitNanos[i] = p.scopedOriginNanos + ns
+	}
 
 	// Partition events into len(splitNanos)+1 segments.
 	segments := make([][]timedEvent, n+1)
 	for i := range events {
 		e := &events[i]
 		seg := n // last segment by default
-		for j, boundary := range splitNanos {
+		for j, boundary := range globalSplitNanos {
 			if e.offsetNanos < boundary {
 				seg = j
 				break
@@ -456,6 +532,21 @@ func (p *starlarkProfile) methodSplit(_ *starlark.Thread, b *starlark.Builtin, a
 		sf := buildStackFileFromTimed(seg)
 		child := newStarlarkProfile(sf, timed, p.event, p.path)
 		child.scopedEvents = seg
+		// Compute scoped origin and span for this segment.
+		var segStart, segEnd int64
+		if i == 0 {
+			segStart = p.scopedOriginNanos
+		} else {
+			segStart = globalSplitNanos[i-1]
+		}
+		if i < n {
+			segEnd = globalSplitNanos[i]
+		} else {
+			segEnd = scopeEnd
+		}
+		child.scopedOriginNanos = segStart
+		child.scopedSpanNanos = segEnd - segStart
+		child.isScoped = true
 		elems[i] = child
 	}
 	return starlark.NewList(elems), nil
@@ -505,7 +596,17 @@ func (p *starlarkProfile) methodNoIdle(_ *starlark.Thread, _ *starlark.Builtin, 
 	child := newStarlarkProfile(newSf, p.parsed, p.event, p.path)
 	child.timedParsed = p.timedParsed
 	child.scopedEvents = filterIdleEvents(p.scopedEvents)
+	child.scopedOriginNanos = p.scopedOriginNanos
+	child.scopedSpanNanos = p.scopedSpanNanos
+	child.isScoped = p.isScoped
 	return child, nil
+}
+
+func (p *starlarkProfile) methodSummary(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if err := starlark.UnpackPositionalArgs(b.Name(), args, kwargs, 0); err != nil {
+		return nil, err
+	}
+	return starlark.String(p.summaryString()), nil
 }
 
 // ---------------------------------------------------------------------------
@@ -554,6 +655,9 @@ func (b *starlarkBucket) buildProfile() *starlarkProfile {
 	child := newStarlarkProfile(sf, b.parent.parsed, b.parent.event, b.parent.path)
 	child.timedParsed = b.parent.timedParsed
 	child.scopedEvents = b.events
+	child.scopedOriginNanos = b.startNanos
+	child.scopedSpanNanos = b.endNanos - b.startNanos
+	child.isScoped = true
 	b.profile = child
 	return child
 }
@@ -678,12 +782,14 @@ func (s *starlarkStack) Attr(name string) (starlark.Value, error) {
 		return starlark.NewBuiltin("above", s.methodAbove), nil
 	case "below":
 		return starlark.NewBuiltin("below", s.methodBelow), nil
+	case "thread_has":
+		return starlark.NewBuiltin("thread_has", s.methodThreadHas), nil
 	}
 	return nil, starlark.NoSuchAttrError(fmt.Sprintf("Stack has no .%s attribute", name))
 }
 
 func (s *starlarkStack) AttrNames() []string {
-	return []string{"frames", "thread", "samples", "leaf", "root", "depth", "has", "has_seq", "above", "below"}
+	return []string{"frames", "thread", "samples", "leaf", "root", "depth", "has", "has_seq", "above", "below", "thread_has"}
 }
 
 func (s *starlarkStack) methodHas(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
@@ -765,6 +871,14 @@ func (s *starlarkStack) methodBelow(_ *starlark.Thread, b *starlark.Builtin, arg
 		}
 	}
 	return starlark.NewList(nil), nil
+}
+
+func (s *starlarkStack) methodThreadHas(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	var pattern string
+	if err := starlark.UnpackPositionalArgs(b.Name(), args, kwargs, 1, &pattern); err != nil {
+		return nil, err
+	}
+	return starlark.Bool(strings.Contains(s.st.thread, pattern)), nil
 }
 
 // ---------------------------------------------------------------------------

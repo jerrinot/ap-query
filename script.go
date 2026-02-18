@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"regexp"
 	"strings"
@@ -125,6 +126,7 @@ func runScript(inline, scriptFile string, scriptArgs []string, timeout time.Dura
 		"emit_all": starlark.NewBuiltin("emit_all", builtinEmitAll),
 		"match":    starlark.NewBuiltin("match", builtinMatch),
 		"diff":     starlark.NewBuiltin("diff", builtinDiff),
+		"round":    starlark.NewBuiltin("round", builtinRound),
 	}
 	for _, e := range extras {
 		predeclared[e.name] = e.value
@@ -312,4 +314,24 @@ func builtinDiff(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, k
 		return nil, err
 	}
 	return computeScriptDiff(a.sf, bProf.sf, minDelta), nil
+}
+
+func builtinRound(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	var xVal starlark.Value
+	var decimals int
+	if err := starlark.UnpackArgs(b.Name(), args, kwargs, "x", &xVal, "decimals?", &decimals); err != nil {
+		return nil, err
+	}
+	x, ok := starlark.AsFloat(xVal)
+	if !ok {
+		return nil, fmt.Errorf("round: x must be a number, got %s", xVal.Type())
+	}
+	if decimals < 0 {
+		decimals = 0
+	}
+	if decimals > 15 {
+		decimals = 15
+	}
+	mult := math.Pow(10, float64(decimals))
+	return starlark.Float(math.Round(x*mult) / mult), nil
 }

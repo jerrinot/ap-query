@@ -21,6 +21,9 @@ Functions:
   diff(a, b, min_delta=0.5) → Diff
       Compare two Profiles by self%. Returns categorized changes.
 
+  round(x, decimals=0) → float
+      Round a float. Workaround for Starlark lacking %.Nf format specifiers.
+
   match(string, pattern) → bool
       RE2 regex match on any string. has() is substring, match() is regex.
 
@@ -36,6 +39,8 @@ Types:
     .stacks        list[Stack]
     .samples       int — total sample count
     .duration      float — seconds (0 for collapsed text)
+    .start         float — seconds from recording start (0 for root/collapsed)
+    .end           float — seconds from recording start (= duration for root, 0 for collapsed)
     .event         string — selected event type
     .events        list[string] — all event types in the file
     .path          string
@@ -46,11 +51,17 @@ Types:
     .timeline(resolution?, buckets?)   → list[Bucket]     Time buckets. JFR only.
         resolution: duration string ("1s") or keyword-only numeric seconds (resolution=30).
         First call re-parses JFR with timestamps (expensive on large files).
-    .split(times list[float])          → list[Profile]    Split at second boundaries. JFR only.
+    .split(times list[float|string])   → list[Profile]    Split at time boundaries. JFR only.
+        times: floats (seconds) or duration strings ("5s", "1m30s"), or mixed.
+        Times are relative to the profile's scope, not recording start.
+        start/end report absolute position; split takes scope-relative offsets.
+        Example: after parts = p.split([4.0]), parts[1].start is 4.0 but
+        parts[1].split([3.0]) splits 3s into that segment, not at absolute 3s.
     .tree(method="", depth=4, min_pct=1.0)   → string  Call tree from method (or root).
     .trace(method, min_pct=0.5, fqn=False)   → string  Hottest path from method.
     .callers(method, depth=4, min_pct=1.0)   → string  Callers tree toward root.
     .no_idle()                             → Profile  Remove idle leaf frames (same as CLI --no-idle).
+    .summary()                             → string  One-line summary: "event: N samples, Xs, M stacks".
 
   Stack — frames[0] is root, frames[-1] is leaf
     .frames        list[Frame]
@@ -63,6 +74,7 @@ Types:
     .has_seq(p1, p2, ...)       → bool         Patterns match in order (not necessarily adjacent).
     .above(pattern)             → list[Frame]  Frames toward leaf. above[0] = direct callee.
     .below(pattern)             → list[Frame]  Frames toward root. below[-1] = direct caller.
+    .thread_has(pattern)        → bool         Substring match on thread name (not frames).
 
   Frame
     .name          string — short name, e.g. "HashMap.resize"
@@ -99,7 +111,7 @@ Types:
 
 Starlark notes:
   - Python dialect. No try/except, no classes, no import, no for/else.
-  - %s, %d, %f work. %.1f (precision) does not — use str() concatenation.
+  - %s, %d, %f work. %.1f (precision) does not — use round() instead.
   - "from" is reserved — use "start"/"end" kwargs in open().
   - Sets, while, top-level if/for, recursion, global reassignment enabled.
   - Dict: .get(k, default), .items(), .keys(), .values().
@@ -136,10 +148,10 @@ Examples:
   for name, count in sorted(callers.items(), key=lambda x: x[1], reverse=True):
       print(str(count) + "  " + name)
 
-  # Split at time boundaries (floats = seconds from recording start)
-  parts = open("profile.jfr").split([5.0, 10.0])  # 3 profiles: [0-5s), [5-10s), [10s+)
+  # Split at time boundaries (floats = seconds, strings = Go durations, or mixed)
+  parts = open("profile.jfr").split(["5s", "10s"])  # 3 profiles: [0-5s), [5-10s), [10s+)
   for i, part in enumerate(parts):
-      print("part " + str(i) + ": " + str(part.samples) + " samples")
+      print("part " + str(i) + ": " + str(part.start) + "s-" + str(part.end) + "s " + str(part.samples) + " samples")
 
   # Group by thread pool (aggregate by name prefix)
   p = open("profile.jfr")
@@ -152,5 +164,5 @@ Examples:
   print(p.tree("HashMap.get", depth=3))
   print(p.callers("HashMap.get"))
 
-  # Filter by thread name (not has() — has() searches frames only)
-  workers = open("profile.jfr").filter(lambda s: "worker" in s.thread)
+  # Filter by thread name (thread_has, not has() — has() searches frames only)
+  workers = open("profile.jfr").filter(lambda s: s.thread_has("worker"))
