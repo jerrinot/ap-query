@@ -80,8 +80,8 @@ Types:
     .depth         int
     .has(pattern)               → bool         Substring on short name and FQN (not regex).
     .has_seq(p1, p2, ...)       → bool         Patterns match in order (not necessarily adjacent).
-    .above(pattern)             → list[Frame]  Frames toward leaf. above[0] = direct callee.
-    .below(pattern)             → list[Frame]  Frames toward root. below[-1] = direct caller.
+    .above(pattern)             → list[Frame]  Callees (toward leaf). above[0] = direct callee.
+    .below(pattern)             → list[Frame]  Callers (toward root). below[-1] = direct caller.
     .thread_has(pattern)        → bool         Substring match on thread name (not frames).
 
   Frame
