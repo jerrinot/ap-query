@@ -26,9 +26,11 @@ Functions:
   round(x, decimals=0) → float
       Round a float. Workaround for Starlark lacking %.Nf format specifiers.
 
-  pad(value, width) → string
-      Stringify and pad to width. Positive = right-align, negative = left-align.
-      If already wider, returned unchanged. pad(42, 6) → "    42", pad("hi", -8) → "hi      ".
+  ljust(value, width) → string
+      Left-justify (pad right with spaces). ljust("hi", 8) → "hi      ".
+  rjust(value, width) → string
+      Right-justify (pad left with spaces). rjust(42, 6) → "    42".
+      Both stringify any type and return unchanged if already wider.
 
   match(string, pattern) → bool
       RE2 regex match on any string. has() is substring, match() is regex.
@@ -118,7 +120,8 @@ Types:
 Starlark notes:
   - Python dialect. No try/except, no classes, no import, no for/else.
   - %s, %d, %f work. No width, padding, alignment, or precision modifiers
-    (%-22s, %8d, %.1f all fail). Use pad() for alignment, round() for precision.
+    (%-22s, %8d, %.1f all fail). Use ljust/rjust for alignment, round() for precision.
+    %% is only needed inside % formatting; in concatenation use plain %.
   - "from" is reserved — use "start"/"end" kwargs in open().
   - Sets, while, top-level if/for, recursion, global reassignment enabled.
   - Dict: .get(k, default), .items(), .keys(), .values().
@@ -129,7 +132,7 @@ Examples:
   # Hot methods
   p = open("profile.jfr")
   for m in p.hot(5):
-      print(pad(round(m.self_pct, 1), 6) + "%  " + m.name)
+      print(rjust(round(m.self_pct, 1), 6) + "%  " + m.name)
 
   # Filter + emit pipeline:  ap-query script -c '...' | ap-query hot -
   p = open("profile.jfr")

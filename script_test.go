@@ -3074,62 +3074,76 @@ func TestRoundBadType(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// pad()
+// ljust() / rjust()
 // ---------------------------------------------------------------------------
 
-func TestPad(t *testing.T) {
+func TestLjust(t *testing.T) {
+	out := captureOutput(func() {
+		code := runScript(`print(ljust("hi", 8))`, "", nil, testTimeout)
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	if strings.TrimRight(out, "\n") != "hi      " {
+		t.Fatalf("expected %q, got %q", "hi      ", strings.TrimRight(out, "\n"))
+	}
+}
+
+func TestRjust(t *testing.T) {
+	out := captureOutput(func() {
+		code := runScript(`print(rjust(42, 6))`, "", nil, testTimeout)
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	if strings.TrimRight(out, "\n") != "    42" {
+		t.Fatalf("expected %q, got %q", "    42", strings.TrimRight(out, "\n"))
+	}
+}
+
+func TestJustNoTruncation(t *testing.T) {
 	out := captureOutput(func() {
 		code := runScript(`
-print(pad(42, 6))
-print(pad("hi", -8))
+print(ljust("longvalue", 3))
+print(rjust("longvalue", 3))
 `, "", nil, testTimeout)
 		if code != 0 {
 			t.Fatalf("expected exit 0, got %d", code)
 		}
 	})
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
-	expected := []string{"    42", "hi      "}
-	if len(lines) != len(expected) {
-		t.Fatalf("expected %d lines, got %d: %q", len(expected), len(lines), out)
-	}
-	for i, exp := range expected {
-		if lines[i] != exp {
-			t.Fatalf("line %d: expected %q, got %q", i, exp, lines[i])
+	for i, line := range lines {
+		if line != "longvalue" {
+			t.Fatalf("line %d: expected %q, got %q", i, "longvalue", line)
 		}
 	}
 }
 
-func TestPadNoTruncation(t *testing.T) {
-	out := captureOutput(func() {
-		code := runScript(`print(pad("longvalue", 3))`, "", nil, testTimeout)
-		if code != 0 {
-			t.Fatalf("expected exit 0, got %d", code)
-		}
-	})
-	if strings.TrimSpace(out) != "longvalue" {
-		t.Fatalf("expected %q, got %q", "longvalue", strings.TrimSpace(out))
-	}
-}
-
-func TestPadZeroWidth(t *testing.T) {
-	out := captureOutput(func() {
-		code := runScript(`print(pad(99, 0))`, "", nil, testTimeout)
-		if code != 0 {
-			t.Fatalf("expected exit 0, got %d", code)
-		}
-	})
-	if strings.TrimSpace(out) != "99" {
-		t.Fatalf("expected %q, got %q", "99", strings.TrimSpace(out))
-	}
-}
-
-func TestPadTypes(t *testing.T) {
+func TestJustZeroWidth(t *testing.T) {
 	out := captureOutput(func() {
 		code := runScript(`
-print(pad(42, 6))
-print(pad(3.14, 8))
-print(pad("hi", 6))
-print(pad(True, 8))
+print(rjust(99, 0))
+print(ljust(99, -1))
+`, "", nil, testTimeout)
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	for i, line := range lines {
+		if line != "99" {
+			t.Fatalf("line %d: expected %q, got %q", i, "99", line)
+		}
+	}
+}
+
+func TestJustTypes(t *testing.T) {
+	out := captureOutput(func() {
+		code := runScript(`
+print(rjust(42, 6))
+print(rjust(3.14, 8))
+print(rjust("hi", 6))
+print(rjust(True, 8))
 `, "", nil, testTimeout)
 		if code != 0 {
 			t.Fatalf("expected exit 0, got %d", code)
@@ -3147,11 +3161,11 @@ print(pad(True, 8))
 	}
 }
 
-func TestPadUnicode(t *testing.T) {
+func TestJustUnicode(t *testing.T) {
 	out := captureOutput(func() {
 		code := runScript(`
-print(pad("café", 8))
-print(pad("é", -4))
+print(rjust("café", 8))
+print(ljust("é", 4))
 `, "", nil, testTimeout)
 		if code != 0 {
 			t.Fatalf("expected exit 0, got %d", code)
@@ -3169,26 +3183,22 @@ print(pad("é", -4))
 	}
 }
 
-func TestPadBytes(t *testing.T) {
+func TestJustBytes(t *testing.T) {
 	out := captureOutput(func() {
-		code := runScript(`print(pad(b"hi", 6))`, "", nil, testTimeout)
+		code := runScript(`print(rjust(b"hi", 6))`, "", nil, testTimeout)
 		if code != 0 {
 			t.Fatalf("expected exit 0, got %d", code)
 		}
 	})
-	if strings.TrimSpace(out) != "hi" {
-		t.Fatalf("expected %q, got %q", "    hi", strings.TrimRight(out, "\n"))
-	}
 	// Should be "    hi" (4 spaces + "hi"), not padding of b"hi" repr.
-	trimmed := strings.TrimRight(out, "\n")
-	if trimmed != "    hi" {
-		t.Fatalf("expected %q, got %q", "    hi", trimmed)
+	if strings.TrimRight(out, "\n") != "    hi" {
+		t.Fatalf("expected %q, got %q", "    hi", strings.TrimRight(out, "\n"))
 	}
 }
 
-func TestPadBadArgs(t *testing.T) {
+func TestJustBadArgs(t *testing.T) {
 	stderr := captureStream(&os.Stderr, func() {
-		code := runScript(`pad()`, "", nil, testTimeout)
+		code := runScript(`ljust()`, "", nil, testTimeout)
 		if code == 0 {
 			t.Fatalf("expected error for missing args")
 		}
@@ -3198,23 +3208,13 @@ func TestPadBadArgs(t *testing.T) {
 	}
 
 	stderr = captureStream(&os.Stderr, func() {
-		code := runScript(`pad("hi", "wide")`, "", nil, testTimeout)
+		code := runScript(`rjust("hi", "wide")`, "", nil, testTimeout)
 		if code == 0 {
 			t.Fatalf("expected error for string width")
 		}
 	})
 	if !strings.Contains(stderr, "got string") {
 		t.Fatalf("expected type error for width, got %q", stderr)
-	}
-
-	stderr = captureStream(&os.Stderr, func() {
-		code := runScript(`pad("x", -9223372036854775808)`, "", nil, testTimeout)
-		if code == 0 {
-			t.Fatalf("expected error for MinInt width")
-		}
-	})
-	if !strings.Contains(stderr, "width out of range") {
-		t.Fatalf("expected 'width out of range' error, got %q", stderr)
 	}
 }
 

@@ -140,7 +140,8 @@ func runScript(inline, scriptFile string, scriptArgs []string, timeout time.Dura
 		"match":    starlark.NewBuiltin("match", builtinMatch),
 		"diff":     starlark.NewBuiltin("diff", builtinDiff),
 		"round":    starlark.NewBuiltin("round", builtinRound),
-		"pad":      starlark.NewBuiltin("pad", builtinPad),
+		"ljust":    starlark.NewBuiltin("ljust", builtinLjust),
+		"rjust":    starlark.NewBuiltin("rjust", builtinRjust),
 	}
 	for _, e := range extras {
 		predeclared[e.name] = e.value
@@ -364,27 +365,32 @@ func valToString(v starlark.Value) string {
 	return v.String()
 }
 
-func builtinPad(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func justifyString(s string, width int, leftAlign bool) starlark.String {
+	charLen := utf8.RuneCountInString(s)
+	if width <= 0 || charLen >= width {
+		return starlark.String(s)
+	}
+	pad := strings.Repeat(" ", width-charLen)
+	if leftAlign {
+		return starlark.String(s + pad)
+	}
+	return starlark.String(pad + s)
+}
+
+func builtinLjust(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var val starlark.Value
 	var width int
 	if err := starlark.UnpackArgs(b.Name(), args, kwargs, "value", &val, "width", &width); err != nil {
 		return nil, err
 	}
-	s := valToString(val)
-	abs := width
-	if abs < 0 {
-		abs = -abs
+	return justifyString(valToString(val), width, true), nil
+}
+
+func builtinRjust(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	var val starlark.Value
+	var width int
+	if err := starlark.UnpackArgs(b.Name(), args, kwargs, "value", &val, "width", &width); err != nil {
+		return nil, err
 	}
-	if abs < 0 { // overflow: -math.MinInt == math.MinInt
-		return nil, fmt.Errorf("pad: width out of range")
-	}
-	charLen := utf8.RuneCountInString(s)
-	if charLen >= abs {
-		return starlark.String(s), nil
-	}
-	pad := strings.Repeat(" ", abs-charLen)
-	if width < 0 {
-		return starlark.String(s + pad), nil // left-align
-	}
-	return starlark.String(pad + s), nil // right-align
+	return justifyString(valToString(val), width, false), nil
 }
