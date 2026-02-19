@@ -6931,11 +6931,7 @@ func TestParseJFRBranchMissesNilFilter(t *testing.T) {
 }
 
 func TestParseJFRBranchMissesAll(t *testing.T) {
-	path := jfrFixture("branch-misses-all.jfr")
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		t.Skip("branch-misses-all.jfr not generated; run testdata/gen/generate.sh")
-	}
-	parsed, err := parseJFRData(path, nil, parseOpts{})
+	parsed, err := parseJFRData(jfrFixture("branch-misses-all.jfr.gz"), nil, parseOpts{})
 	if err != nil {
 		t.Fatalf("parseJFRData: %v", err)
 	}
