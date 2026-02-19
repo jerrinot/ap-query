@@ -7,11 +7,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
-	"runtime/pprof"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -19,159 +16,17 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Workload functions — names chosen so tests can grep for them.
-// go:noinline prevents the compiler from inlining away the frame.
+// Fixture paths — pre-generated pprof files in testdata/.
+// Regenerate with: go run testdata/gen/gen_pprof.go
 // ---------------------------------------------------------------------------
 
-//go:noinline
-func pprofBusyCompute() int {
-	sum := 0
-	for i := 0; i < 5_000_000; i++ {
-		sum += i * i
-	}
-	return sum
-}
-
-//go:noinline
-func pprofBusySort() {
-	data := make([]int, 100_000)
-	for i := range data {
-		data[i] = len(data) - i
-	}
-	// Simple bubble-like loop to burn CPU.
-	for i := 0; i < len(data); i++ {
-		for j := i + 1; j < len(data) && j < i+100; j++ {
-			if data[j] < data[i] {
-				data[i], data[j] = data[j], data[i]
-			}
-		}
-	}
-}
-
-//go:noinline
-func pprofAllocSlices() {
-	var keep [][]byte
-	for i := 0; i < 10_000; i++ {
-		keep = append(keep, make([]byte, 1024))
-	}
-	runtime.KeepAlive(keep)
-}
-
-//go:noinline
-func pprofAllocMaps() {
-	var keep []map[string]int
-	for i := 0; i < 5_000; i++ {
-		m := make(map[string]int, 100)
-		for j := 0; j < 100; j++ {
-			m["key"] = j
-		}
-		keep = append(keep, m)
-	}
-	runtime.KeepAlive(keep)
-}
-
-//go:noinline
-func pprofLockContention(mu *sync.Mutex, wg *sync.WaitGroup) {
-	defer wg.Done()
-	for i := 0; i < 500; i++ {
-		mu.Lock()
-		// Small amount of work under lock to create contention.
-		sum := 0
-		for j := 0; j < 1000; j++ {
-			sum += j
-		}
-		runtime.KeepAlive(sum)
-		mu.Unlock()
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Fixture generators — produce real pprof files from runtime/pprof
-// ---------------------------------------------------------------------------
-
-// generateCPUProfile runs CPU-intensive work and captures a pprof CPU profile.
-func generateCPUProfile(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "cpu.pb.gz")
-	f, err := os.Create(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := pprof.StartCPUProfile(f); err != nil {
-		f.Close()
-		t.Fatal(err)
-	}
-	// Run enough work to get samples (~100 Hz default rate).
-	deadline := time.Now().Add(200 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		pprofBusyCompute()
-		pprofBusySort()
-	}
-	pprof.StopCPUProfile()
-	f.Close()
-	return path
-}
-
-// generateAllocProfile captures a heap allocation profile.
-func generateAllocProfile(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "alloc.pb.gz")
-
-	// Force GC and clear old stats.
-	runtime.GC()
-
-	pprofAllocSlices()
-	pprofAllocMaps()
-
-	f, err := os.Create(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	// "allocs" profile includes alloc_objects/count and alloc_space/bytes.
-	p := pprof.Lookup("allocs")
-	if p == nil {
-		t.Fatal("alloc profile not available")
-	}
-	if err := p.WriteTo(f, 0); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
-// generateMutexProfile captures a mutex contention profile.
-func generateMutexProfile(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "mutex.pb.gz")
-
-	prev := runtime.SetMutexProfileFraction(1)
-	defer runtime.SetMutexProfileFraction(prev)
-
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	for i := 0; i < 4; i++ {
-		wg.Add(1)
-		go pprofLockContention(&mu, &wg)
-	}
-	wg.Wait()
-
-	f, err := os.Create(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	p := pprof.Lookup("mutex")
-	if p == nil {
-		t.Fatal("mutex profile not available")
-	}
-	if err := p.WriteTo(f, 0); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
+var (
+	pprofCPUFixture    = filepath.Join("testdata", "cpu.pb.gz")
+	pprofCPU2Fixture   = filepath.Join("testdata", "cpu2.pb.gz")
+	pprofAllocFixture  = filepath.Join("testdata", "alloc.pb.gz")
+	pprofAlloc2Fixture = filepath.Join("testdata", "alloc2.pb.gz")
+	pprofMutexFixture  = filepath.Join("testdata", "mutex.pb.gz")
+)
 
 // ---------------------------------------------------------------------------
 // Format detection
@@ -202,7 +57,7 @@ func TestDetectFormatPprof(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPprofHot(t *testing.T) {
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 
 	parsed, err := parsePprofData(path, singleEventType("cpu"))
 	if err != nil {
@@ -228,7 +83,7 @@ func TestPprofHot(t *testing.T) {
 }
 
 func TestPprofTree(t *testing.T) {
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 
 	parsed, err := parsePprofData(path, singleEventType("cpu"))
 	if err != nil {
@@ -249,7 +104,7 @@ func TestPprofTree(t *testing.T) {
 }
 
 func TestPprofCallers(t *testing.T) {
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 
 	parsed, err := parsePprofData(path, singleEventType("cpu"))
 	if err != nil {
@@ -277,7 +132,7 @@ func TestPprofCallers(t *testing.T) {
 }
 
 func TestPprofTrace(t *testing.T) {
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 
 	parsed, err := parsePprofData(path, singleEventType("cpu"))
 	if err != nil {
@@ -308,7 +163,7 @@ func TestPprofTrace(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPprofAllocProfile(t *testing.T) {
-	path := generateAllocProfile(t)
+	path := pprofAllocFixture
 
 	parsed, err := parsePprofData(path, allEventTypes())
 	if err != nil {
@@ -337,7 +192,7 @@ func TestPprofAllocValueSelection(t *testing.T) {
 	// Go alloc profiles include alloc_objects/count (priority 1) and
 	// alloc_space/bytes (priority 2). Verify that bytes wins (the count
 	// should be in bytes, not object count).
-	path := generateAllocProfile(t)
+	path := pprofAllocFixture
 
 	parsed, err := parsePprofData(path, allEventTypes())
 	if err != nil {
@@ -360,7 +215,7 @@ func TestPprofAllocValueSelection(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPprofLockProfile(t *testing.T) {
-	path := generateMutexProfile(t)
+	path := pprofMutexFixture
 
 	parsed, err := parsePprofData(path, allEventTypes())
 	if err != nil {
@@ -390,8 +245,8 @@ func TestPprofLockProfile(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPprofDiff(t *testing.T) {
-	before := generateCPUProfile(t)
-	after := generateCPUProfile(t)
+	before := pprofCPUFixture
+	after := pprofCPU2Fixture
 
 	bSF, _, err := openInput(before, "cpu")
 	if err != nil {
@@ -416,7 +271,7 @@ func TestPprofDiff(t *testing.T) {
 }
 
 func TestPprofMixedDiff(t *testing.T) {
-	pprofPath := generateCPUProfile(t)
+	pprofPath := pprofCPUFixture
 
 	dir := t.TempDir()
 	collapsedPath := filepath.Join(dir, "before.txt")
@@ -445,7 +300,7 @@ func TestPprofMixedDiff(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPprofLines(t *testing.T) {
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 
 	parsed, err := parsePprofData(path, singleEventType("cpu"))
 	if err != nil {
@@ -478,7 +333,7 @@ func TestPprofLines(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPprofFilter(t *testing.T) {
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 
 	parsed, err := parsePprofData(path, singleEventType("cpu"))
 	if err != nil {
@@ -502,7 +357,7 @@ func TestPprofFilter(t *testing.T) {
 }
 
 func TestPprofCollapse(t *testing.T) {
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 
 	parsed, err := parsePprofData(path, singleEventType("cpu"))
 	if err != nil {
@@ -535,7 +390,7 @@ func TestPprofCollapse(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPprofEvents(t *testing.T) {
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 
 	out := captureOutput(func() {
 		err := cmdEvents(path)
@@ -564,7 +419,7 @@ func TestPprofEventsCollapsedRejected(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPprofInfo(t *testing.T) {
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 
 	parsed, err := parsePprofData(path, allEventTypes())
 	if err != nil {
@@ -596,7 +451,7 @@ func TestPprofInfo(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPprofTimelineError(t *testing.T) {
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 
 	_, err := preprocessProfile(preprocessOpts{
 		path:    path,
@@ -611,7 +466,7 @@ func TestPprofTimelineError(t *testing.T) {
 }
 
 func TestPprofFromToWarning(t *testing.T) {
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 
 	stderr := captureStream(&os.Stderr, func() {
 		_, err := preprocessProfile(preprocessOpts{
@@ -635,7 +490,7 @@ func TestPprofFromToWarning(t *testing.T) {
 
 func TestPprofStdin(t *testing.T) {
 	// Generate a real pprof file, then pipe its contents via stdin.
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -660,7 +515,7 @@ func TestPprofStdinAllocEventResolution(t *testing.T) {
 	// even though no --event flag is given (default would be "cpu").
 	// Before the fix, this produced zero samples because detectFormat("-")
 	// always returned formatCollapsed, skipping event resolution.
-	path := generateAllocProfile(t)
+	path := pprofAllocFixture
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -686,7 +541,7 @@ func TestPprofStdinAllocEventResolution(t *testing.T) {
 
 func TestPprofStdinExplicitEvent(t *testing.T) {
 	// Pipe alloc pprof via stdin with explicit --event alloc.
-	path := generateAllocProfile(t)
+	path := pprofAllocFixture
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -706,7 +561,7 @@ func TestPprofStdinExplicitEvent(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPprofStackReversal(t *testing.T) {
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 
 	parsed, err := parsePprofData(path, singleEventType("cpu"))
 	if err != nil {
@@ -738,7 +593,7 @@ func TestPprofStackReversal(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPprofOpenInput(t *testing.T) {
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 
 	sf, hasMetadata, err := openInput(path, "cpu")
 	if err != nil {
@@ -757,7 +612,7 @@ func TestPprofOpenInput(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPprofPreprocessProfile(t *testing.T) {
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 
 	pctx, err := preprocessProfile(preprocessOpts{
 		path:    path,
@@ -779,7 +634,7 @@ func TestPprofPreprocessProfile(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPprofScript(t *testing.T) {
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 
 	script := `
 p = open("` + path + `")
@@ -801,7 +656,7 @@ for m in p.hot(n=3):
 }
 
 func TestPprofScriptStartEndRejected(t *testing.T) {
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 
 	script := `p = open("` + path + `", start="5s")`
 
@@ -818,7 +673,7 @@ func TestPprofScriptStartEndRejected(t *testing.T) {
 }
 
 func TestPprofScriptTimelineError(t *testing.T) {
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 
 	script := `
 p = open("` + path + `")
@@ -838,7 +693,7 @@ p.timeline()
 }
 
 func TestPprofScriptSplitError(t *testing.T) {
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 
 	script := `
 p = open("` + path + `")
@@ -1511,7 +1366,7 @@ func TestPprofFromReaderEmpty(t *testing.T) {
 
 func TestPprofPprofExtension(t *testing.T) {
 	// Generate a profile but save with .pprof extension.
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -1536,7 +1391,7 @@ func TestPprofPprofExtension(t *testing.T) {
 func TestPprofPbExtension(t *testing.T) {
 	// Save with .pb extension (uncompressed — profile.Parse handles gzip internally,
 	// so a gzipped file with .pb extension still works).
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -1563,7 +1418,7 @@ func TestPprofPbExtension(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPprofThreads(t *testing.T) {
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 
 	parsed, err := parsePprofData(path, singleEventType("cpu"))
 	if err != nil {
@@ -1633,7 +1488,7 @@ func TestPprofThreadFilter(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPprofHotFQN(t *testing.T) {
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 
 	parsed, err := parsePprofData(path, singleEventType("cpu"))
 	if err != nil {
@@ -1658,7 +1513,7 @@ func TestPprofHotFQN(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPprofNoIdle(t *testing.T) {
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 
 	parsed, err := parsePprofData(path, singleEventType("cpu"))
 	if err != nil {
@@ -1681,7 +1536,7 @@ func TestPprofNoIdle(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPprofCollapseRoundTrip(t *testing.T) {
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 
 	parsed, err := parsePprofData(path, singleEventType("cpu"))
 	if err != nil {
@@ -1714,7 +1569,7 @@ func TestPprofCollapseRoundTrip(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPprofAllocEvents(t *testing.T) {
-	path := generateAllocProfile(t)
+	path := pprofAllocFixture
 
 	out := captureOutput(func() {
 		err := cmdEvents(path)
@@ -1733,7 +1588,7 @@ func TestPprofAllocEvents(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPprofPreprocessProfileAllocEvent(t *testing.T) {
-	path := generateAllocProfile(t)
+	path := pprofAllocFixture
 
 	pctx, err := preprocessProfile(preprocessOpts{
 		path:      path,
@@ -1749,7 +1604,7 @@ func TestPprofPreprocessProfileAllocEvent(t *testing.T) {
 }
 
 func TestPprofPreprocessProfileInvalidEvent(t *testing.T) {
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 
 	_, err := preprocessProfile(preprocessOpts{
 		path:      path,
@@ -1766,8 +1621,8 @@ func TestPprofPreprocessProfileInvalidEvent(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPprofDiffAlloc(t *testing.T) {
-	before := generateAllocProfile(t)
-	after := generateAllocProfile(t)
+	before := pprofAllocFixture
+	after := pprofAlloc2Fixture
 
 	bSF, _, err := openInput(before, "alloc")
 	if err != nil {
@@ -1799,26 +1654,7 @@ func TestPprofLargeProfile(t *testing.T) {
 		t.Skip("skipping large profile test in short mode")
 	}
 
-	dir := t.TempDir()
-	path := filepath.Join(dir, "large.pb.gz")
-	f, err := os.Create(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := pprof.StartCPUProfile(f); err != nil {
-		f.Close()
-		t.Fatal(err)
-	}
-	// Longer profiling for more samples.
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		pprofBusyCompute()
-		pprofBusySort()
-	}
-	pprof.StopCPUProfile()
-	f.Close()
-
-	parsed, err := parsePprofData(path, singleEventType("cpu"))
+	parsed, err := parsePprofData(pprofCPUFixture, singleEventType("cpu"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1865,8 +1701,8 @@ func TestPprofStdinPlainText(t *testing.T) {
 func TestPprofStdinDiffAllocBefore(t *testing.T) {
 	// Pipe alloc pprof as "before" via stdin, file as "after".
 	// Event should auto-resolve to alloc (not default cpu).
-	before := generateAllocProfile(t)
-	after := generateAllocProfile(t)
+	before := pprofAllocFixture
+	after := pprofAlloc2Fixture
 
 	data, err := os.ReadFile(before)
 	if err != nil {
@@ -1889,8 +1725,8 @@ func TestPprofStdinDiffAllocBefore(t *testing.T) {
 
 func TestPprofStdinDiffAllocAfter(t *testing.T) {
 	// Pipe alloc pprof as "after" via stdin, file as "before".
-	before := generateAllocProfile(t)
-	after := generateAllocProfile(t)
+	before := pprofAllocFixture
+	after := pprofAlloc2Fixture
 
 	data, err := os.ReadFile(after)
 	if err != nil {
@@ -1932,7 +1768,7 @@ func TestPprofStdinDiffCollapsed(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPprofScriptEvents(t *testing.T) {
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 
 	script := `
 p = open("` + path + `")
@@ -1952,7 +1788,7 @@ for e in p.events:
 }
 
 func TestPprofScriptFilter(t *testing.T) {
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 
 	script := `
 p = open("` + path + `")
@@ -1980,7 +1816,7 @@ print(f.samples)
 }
 
 func TestPprofScriptTree(t *testing.T) {
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 
 	script := `
 p = open("` + path + `")
@@ -1999,7 +1835,7 @@ print(p.tree(depth=3, min_pct=0.1))
 }
 
 func TestPprofScriptCallers(t *testing.T) {
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 
 	// Find a method name to query.
 	parsed, err := parsePprofData(path, singleEventType("cpu"))
@@ -2033,7 +1869,7 @@ print(p.callers("` + method + `"))
 }
 
 func TestPprofScriptTrace(t *testing.T) {
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 
 	parsed, err := parsePprofData(path, singleEventType("cpu"))
 	if err != nil {
@@ -2066,7 +1902,7 @@ print(p.trace("` + method + `"))
 }
 
 func TestPprofScriptNoIdle(t *testing.T) {
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 
 	script := `
 p = open("` + path + `")
@@ -2086,7 +1922,7 @@ print(f.samples)
 }
 
 func TestPprofScriptSummary(t *testing.T) {
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 
 	script := `
 p = open("` + path + `")
@@ -2105,7 +1941,7 @@ print(p.summary())
 }
 
 func TestPprofScriptStackAttributes(t *testing.T) {
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 
 	script := `
 p = open("` + path + `")
@@ -2126,8 +1962,8 @@ for s in p.stacks:
 }
 
 func TestPprofScriptDiff(t *testing.T) {
-	before := generateCPUProfile(t)
-	after := generateCPUProfile(t)
+	before := pprofCPUFixture
+	after := pprofCPU2Fixture
 
 	script := `
 a = open("` + before + `")
@@ -2148,7 +1984,7 @@ print(result)
 }
 
 func TestPprofScriptOpenWithEvent(t *testing.T) {
-	path := generateAllocProfile(t)
+	path := pprofAllocFixture
 
 	script := `
 p = open("` + path + `", event="alloc")
@@ -2172,7 +2008,7 @@ print(p.samples)
 }
 
 func TestPprofScriptOpenInvalidEvent(t *testing.T) {
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 
 	script := `p = open("` + path + `", event="bogus")`
 
@@ -2190,7 +2026,7 @@ func TestPprofScriptOpenInvalidEvent(t *testing.T) {
 
 func TestPprofScriptOpenWithThread(t *testing.T) {
 	// Thread filtering via open() should work even if no threads match.
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 
 	script := `
 p = open("` + path + `", thread="nonexistent-thread")
@@ -2214,7 +2050,7 @@ print(p.samples)
 
 func TestPprofScriptOpenStdinMetadata(t *testing.T) {
 	// open("-") with pprof stdin should preserve metadata (events list).
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -2241,7 +2077,7 @@ print("samples=" + str(p.samples))
 
 func TestPprofScriptOpenStdinWrongEvent(t *testing.T) {
 	// open("-", event="cpu") on alloc-only pprof should return event-not-found error.
-	path := generateAllocProfile(t)
+	path := pprofAllocFixture
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -2260,7 +2096,7 @@ func TestPprofScriptOpenStdinWrongEvent(t *testing.T) {
 
 func TestPprofScriptOpenStdinStartEndRejected(t *testing.T) {
 	// open("-", start="1s") on pprof stdin should reject start/end.
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -2299,7 +2135,7 @@ print("samples=" + str(p.samples))
 // ---------------------------------------------------------------------------
 
 func TestPprofCLIEvents(t *testing.T) {
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 
 	exitCode, stdout, stderr := runCLIForTest(t, []string{"events", path}, nil)
 	if exitCode != 0 {
@@ -2311,7 +2147,7 @@ func TestPprofCLIEvents(t *testing.T) {
 }
 
 func TestPprofCLIEventsStdin(t *testing.T) {
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -2338,7 +2174,7 @@ func TestPprofCLIEventsStdinCollapsedRejected(t *testing.T) {
 }
 
 func TestPprofCLIInfo(t *testing.T) {
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 
 	exitCode, stdout, stderr := runCLIForTest(t, []string{"info", path}, nil)
 	if exitCode != 0 {
@@ -2350,7 +2186,7 @@ func TestPprofCLIInfo(t *testing.T) {
 }
 
 func TestPprofCLITree(t *testing.T) {
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 
 	exitCode, stdout, stderr := runCLIForTest(t, []string{"tree", path}, nil)
 	if exitCode != 0 {
@@ -2362,7 +2198,7 @@ func TestPprofCLITree(t *testing.T) {
 }
 
 func TestPprofCLICollapse(t *testing.T) {
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 
 	exitCode, stdout, stderr := runCLIForTest(t, []string{"collapse", path}, nil)
 	if exitCode != 0 {
@@ -2375,7 +2211,7 @@ func TestPprofCLICollapse(t *testing.T) {
 }
 
 func TestPprofCLITimeline(t *testing.T) {
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 
 	exitCode, _, stderr := runCLIForTest(t, []string{"timeline", path}, nil)
 	if exitCode == 0 {
@@ -2387,8 +2223,8 @@ func TestPprofCLITimeline(t *testing.T) {
 }
 
 func TestPprofCLIDiff(t *testing.T) {
-	before := generateCPUProfile(t)
-	after := generateCPUProfile(t)
+	before := pprofCPUFixture
+	after := pprofCPU2Fixture
 
 	exitCode, stdout, stderr := runCLIForTest(t, []string{"diff", before, after}, nil)
 	if exitCode != 0 {
@@ -2404,7 +2240,7 @@ func TestPprofCLIDiff(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestParseStructuredProfilePprof(t *testing.T) {
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 
 	parsed, err := parseStructuredProfile(path, nil)
 	if err != nil {
@@ -2434,7 +2270,7 @@ func TestParseStructuredProfileCollapsed(t *testing.T) {
 
 func TestPprofInfoWithDuration(t *testing.T) {
 	// CPU profiles from Go runtime have DurationNanos set.
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 
 	parsed, err := parsePprofData(path, allEventTypes())
 	if err != nil {
@@ -2492,7 +2328,7 @@ func decompressPprof(t *testing.T, path string) []byte {
 
 func TestPprofRawProtobufStdinHot(t *testing.T) {
 	// Raw (decompressed) protobuf pprof on stdin should be detected and parsed.
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 	raw := decompressPprof(t, path)
 
 	exitCode, stdout, stderr := runCLIForTest(t, []string{"hot", "-"}, bytes.NewReader(raw))
@@ -2505,7 +2341,7 @@ func TestPprofRawProtobufStdinHot(t *testing.T) {
 }
 
 func TestPprofRawProtobufStdinEvents(t *testing.T) {
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 	raw := decompressPprof(t, path)
 
 	exitCode, stdout, stderr := runCLIForTest(t, []string{"events", "-"}, bytes.NewReader(raw))
@@ -2518,8 +2354,8 @@ func TestPprofRawProtobufStdinEvents(t *testing.T) {
 }
 
 func TestPprofRawProtobufStdinDiff(t *testing.T) {
-	before := generateCPUProfile(t)
-	after := generateCPUProfile(t)
+	before := pprofCPUFixture
+	after := pprofCPU2Fixture
 	raw := decompressPprof(t, before)
 
 	exitCode, stdout, stderr := runCLIForTest(t, []string{"diff", "-", after}, bytes.NewReader(raw))
@@ -2532,7 +2368,7 @@ func TestPprofRawProtobufStdinDiff(t *testing.T) {
 }
 
 func TestPprofRawProtobufStdinScript(t *testing.T) {
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 	raw := decompressPprof(t, path)
 
 	script := `
@@ -2550,7 +2386,7 @@ print(p.samples)
 
 func TestPprofGzipStdinStillWorks(t *testing.T) {
 	// Regression: gzip-compressed pprof stdin must still work.
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -2628,7 +2464,7 @@ func TestStdinCorruptBinaryErrors(t *testing.T) {
 
 func TestStdinTruncatedPprofErrors(t *testing.T) {
 	// Truncated pprof: take just the first 16 bytes of a real profile.
-	path := generateCPUProfile(t)
+	path := pprofCPUFixture
 	raw := decompressPprof(t, path)
 	truncated := raw[:min(16, len(raw))]
 
