@@ -23,7 +23,7 @@ func newInfoCmd() *cobra.Command {
 			}
 			cmdInfo(pctx.sf, infoOpts{
 				eventType:     pctx.eventType,
-				isJFR:         pctx.isJFR,
+				hasMetadata:   pctx.hasMetadata,
 				eventCounts:   pctx.eventCounts,
 				expand:        expand,
 				topThreads:    topThreads,
@@ -43,7 +43,7 @@ func newInfoCmd() *cobra.Command {
 
 type infoOpts struct {
 	eventType     string
-	isJFR         bool
+	hasMetadata   bool
 	eventCounts   map[string]int
 	expand        int
 	topThreads    int
@@ -56,7 +56,7 @@ func cmdInfo(sf *stackFile, opts infoOpts) {
 	// === Header ===
 	if opts.spanNanos > 0 {
 		fmt.Printf("Duration: %s  Samples: %d (%s)\n\n", formatDuration(opts.spanNanos), sf.totalSamples, opts.eventType)
-	} else if opts.isJFR && len(opts.eventCounts) > 0 {
+	} else if opts.hasMetadata && len(opts.eventCounts) > 0 {
 		fmt.Printf("Event: %s\n\n", opts.eventType)
 	}
 
@@ -108,7 +108,7 @@ func cmdInfo(sf *stackFile, opts infoOpts) {
 	}
 
 	// === Other available events ===
-	if opts.isJFR && len(opts.eventCounts) > 1 {
+	if opts.hasMetadata && len(opts.eventCounts) > 1 {
 		others := formatEventList(opts.eventCounts, opts.eventType)
 		if len(others) > 0 {
 			fmt.Printf("\nAlso available: %s\n", strings.Join(others, ", "))

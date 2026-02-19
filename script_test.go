@@ -1722,18 +1722,17 @@ print(len(buckets))
 }
 
 func TestTimelineCollapsed(t *testing.T) {
-	out := captureOutput(func() {
+	stderr := captureStream(&os.Stderr, func() {
 		code := runScript(fmt.Sprintf(`
 p = open(%q)
-buckets = p.timeline()
-print(len(buckets))
+p.timeline()
 `, scriptFixture("perf.collapsed")), "", nil, testTimeout)
-		if code != 0 {
-			t.Fatalf("expected exit 0, got %d", code)
+		if code == 0 {
+			t.Fatal("expected non-zero exit for timeline on collapsed text")
 		}
 	})
-	if strings.TrimSpace(out) != "0" {
-		t.Fatalf("expected 0 buckets for collapsed, got %q", out)
+	if !strings.Contains(stderr, "requires JFR data") {
+		t.Fatalf("expected JFR requirement error, got stderr:\n%s", stderr)
 	}
 }
 
@@ -1946,7 +1945,7 @@ func TestTimelineFilteredProfile(t *testing.T) {
 		{frames: []string{"A", "B"}, lines: []uint32{0, 0}, count: 5, thread: "worker"},
 		{frames: []string{"C", "D"}, lines: []uint32{0, 0}, count: 3, thread: "main"},
 	})
-	timed := &parsedJFR{
+	timed := &parsedProfile{
 		eventCounts:   map[string]int{"cpu": 8},
 		stacksByEvent: map[string]*stackFile{"cpu": sf},
 		timedEvents: map[string][]timedEvent{
@@ -1993,7 +1992,7 @@ func TestSplitFilteredProfile(t *testing.T) {
 		{frames: []string{"A", "B"}, lines: []uint32{0, 0}, count: 5, thread: "worker"},
 		{frames: []string{"C", "D"}, lines: []uint32{0, 0}, count: 3, thread: "main"},
 	})
-	timed := &parsedJFR{
+	timed := &parsedProfile{
 		eventCounts:   map[string]int{"cpu": 8},
 		stacksByEvent: map[string]*stackFile{"cpu": sf},
 		timedEvents: map[string][]timedEvent{
@@ -2040,7 +2039,7 @@ func TestSplitThenTimeline(t *testing.T) {
 	sf := makeStackFile([]stack{
 		{frames: []string{"A", "B"}, lines: []uint32{0, 0}, count: 6, thread: "t1"},
 	})
-	timed := &parsedJFR{
+	timed := &parsedProfile{
 		eventCounts:   map[string]int{"cpu": 6},
 		stacksByEvent: map[string]*stackFile{"cpu": sf},
 		timedEvents: map[string][]timedEvent{
@@ -2099,7 +2098,7 @@ func TestSplitFilterTimeline(t *testing.T) {
 		{frames: []string{"A", "B"}, lines: []uint32{0, 0}, count: 4, thread: "t1"},
 		{frames: []string{"C", "D"}, lines: []uint32{0, 0}, count: 4, thread: "t1"},
 	})
-	timed := &parsedJFR{
+	timed := &parsedProfile{
 		eventCounts:   map[string]int{"cpu": 8},
 		stacksByEvent: map[string]*stackFile{"cpu": sf},
 		timedEvents: map[string][]timedEvent{
@@ -2260,7 +2259,7 @@ func TestBucketProfile(t *testing.T) {
 		{frames: []string{"A", "B"}, lines: []uint32{0, 0}, count: 5, thread: "t1"},
 		{frames: []string{"C", "D"}, lines: []uint32{0, 0}, count: 3, thread: "t1"},
 	})
-	timed := &parsedJFR{
+	timed := &parsedProfile{
 		eventCounts:   map[string]int{"cpu": 8},
 		stacksByEvent: map[string]*stackFile{"cpu": sf},
 		timedEvents: map[string][]timedEvent{
@@ -2307,7 +2306,7 @@ func TestBucketProfileFilter(t *testing.T) {
 		{frames: []string{"A", "B"}, lines: []uint32{0, 0}, count: 5, thread: "t1"},
 		{frames: []string{"C", "D"}, lines: []uint32{0, 0}, count: 3, thread: "t1"},
 	})
-	timed := &parsedJFR{
+	timed := &parsedProfile{
 		eventCounts:   map[string]int{"cpu": 8},
 		stacksByEvent: map[string]*stackFile{"cpu": sf},
 		timedEvents: map[string][]timedEvent{
@@ -2341,7 +2340,7 @@ func TestBucketProfileTimeline(t *testing.T) {
 	sf := makeStackFile([]stack{
 		{frames: []string{"A", "B"}, lines: []uint32{0, 0}, count: 4, thread: "t1"},
 	})
-	timed := &parsedJFR{
+	timed := &parsedProfile{
 		eventCounts:   map[string]int{"cpu": 4},
 		stacksByEvent: map[string]*stackFile{"cpu": sf},
 		timedEvents: map[string][]timedEvent{
@@ -2632,7 +2631,7 @@ func TestBucketProfileTree(t *testing.T) {
 		{frames: []string{"A", "B", "C"}, lines: []uint32{0, 0, 0}, count: 5, thread: "t1"},
 		{frames: []string{"A", "B", "D"}, lines: []uint32{0, 0, 0}, count: 3, thread: "t1"},
 	})
-	timed := &parsedJFR{
+	timed := &parsedProfile{
 		eventCounts:   map[string]int{"cpu": 8},
 		stacksByEvent: map[string]*stackFile{"cpu": sf},
 		timedEvents: map[string][]timedEvent{
@@ -2933,7 +2932,7 @@ func TestProfileNoIdleScopedEvents(t *testing.T) {
 		{offsetNanos: 1_500_000_000, stackKey: "A;B", frames: []string{"A", "B"}, lines: []uint32{0, 0}, thread: "t1", weight: 2},
 		{offsetNanos: 2_000_000_000, stackKey: "A;java/lang/Object.wait", frames: []string{"A", "java/lang/Object.wait"}, lines: []uint32{0, 0}, thread: "t1", weight: 2},
 	}
-	timed := &parsedJFR{
+	timed := &parsedProfile{
 		eventCounts:   map[string]int{"cpu": 7},
 		stacksByEvent: map[string]*stackFile{"cpu": sf},
 		timedEvents:   map[string][]timedEvent{"cpu": events},
@@ -2984,7 +2983,7 @@ func TestBucketLabel(t *testing.T) {
 		{offsetNanos: 0, stackKey: "A;B", frames: []string{"A", "B"}, lines: []uint32{0, 0}, thread: "t1", weight: 3},
 		{offsetNanos: 2_000_000_000, stackKey: "A;B", frames: []string{"A", "B"}, lines: []uint32{0, 0}, thread: "t1", weight: 2},
 	}
-	timed := &parsedJFR{
+	timed := &parsedProfile{
 		eventCounts:   map[string]int{"cpu": 5},
 		stacksByEvent: map[string]*stackFile{"cpu": sf},
 		timedEvents:   map[string][]timedEvent{"cpu": events},
@@ -3357,7 +3356,7 @@ func TestBucketProfileDuration(t *testing.T) {
 	sf := makeStackFile([]stack{
 		{frames: []string{"A", "B"}, lines: []uint32{0, 0}, count: 4, thread: "t1"},
 	})
-	timed := &parsedJFR{
+	timed := &parsedProfile{
 		eventCounts:   map[string]int{"cpu": 4},
 		stacksByEvent: map[string]*stackFile{"cpu": sf},
 		timedEvents: map[string][]timedEvent{
@@ -3406,7 +3405,7 @@ func TestSplitProfileDuration(t *testing.T) {
 	sf := makeStackFile([]stack{
 		{frames: []string{"A", "B"}, lines: []uint32{0, 0}, count: 6, thread: "t1"},
 	})
-	timed := &parsedJFR{
+	timed := &parsedProfile{
 		eventCounts:   map[string]int{"cpu": 6},
 		stacksByEvent: map[string]*stackFile{"cpu": sf},
 		timedEvents: map[string][]timedEvent{
@@ -3453,7 +3452,7 @@ func TestFilterInheritsScopedDuration(t *testing.T) {
 		{frames: []string{"A", "B"}, lines: []uint32{0, 0}, count: 3, thread: "t1"},
 		{frames: []string{"C", "D"}, lines: []uint32{0, 0}, count: 3, thread: "t1"},
 	})
-	timed := &parsedJFR{
+	timed := &parsedProfile{
 		eventCounts:   map[string]int{"cpu": 6},
 		stacksByEvent: map[string]*stackFile{"cpu": sf},
 		timedEvents: map[string][]timedEvent{
@@ -3497,7 +3496,7 @@ func TestGroupByInheritsScopedDuration(t *testing.T) {
 		{frames: []string{"A", "B"}, lines: []uint32{0, 0}, count: 3, thread: "t1"},
 		{frames: []string{"C", "D"}, lines: []uint32{0, 0}, count: 3, thread: "t2"},
 	})
-	timed := &parsedJFR{
+	timed := &parsedProfile{
 		eventCounts:   map[string]int{"cpu": 6},
 		stacksByEvent: map[string]*stackFile{"cpu": sf},
 		timedEvents: map[string][]timedEvent{
@@ -3535,7 +3534,7 @@ func TestNoIdleInheritsScopedDuration(t *testing.T) {
 		{frames: []string{"A", "B"}, lines: []uint32{0, 0}, count: 3, thread: "t1"},
 		{frames: []string{"A", "java/lang/Object.wait"}, lines: []uint32{0, 0}, count: 2, thread: "t1"},
 	})
-	timed := &parsedJFR{
+	timed := &parsedProfile{
 		eventCounts:   map[string]int{"cpu": 5},
 		stacksByEvent: map[string]*stackFile{"cpu": sf},
 		timedEvents: map[string][]timedEvent{
@@ -3576,7 +3575,7 @@ func TestMultiSplitDuration(t *testing.T) {
 	sf := makeStackFile([]stack{
 		{frames: []string{"A", "B"}, lines: []uint32{0, 0}, count: 6, thread: "t1"},
 	})
-	timed := &parsedJFR{
+	timed := &parsedProfile{
 		eventCounts:   map[string]int{"cpu": 6},
 		stacksByEvent: map[string]*stackFile{"cpu": sf},
 		timedEvents: map[string][]timedEvent{
@@ -3620,7 +3619,7 @@ func TestComposedSplit(t *testing.T) {
 	sf := makeStackFile([]stack{
 		{frames: []string{"A", "B"}, lines: []uint32{0, 0}, count: 6, thread: "t1"},
 	})
-	timed := &parsedJFR{
+	timed := &parsedProfile{
 		eventCounts:   map[string]int{"cpu": 6},
 		stacksByEvent: map[string]*stackFile{"cpu": sf},
 		timedEvents: map[string][]timedEvent{
@@ -3689,7 +3688,7 @@ func TestComposedSplitTriple(t *testing.T) {
 	sf := makeStackFile([]stack{
 		{frames: []string{"A"}, lines: []uint32{0}, count: 8, thread: "t1"},
 	})
-	timed := &parsedJFR{
+	timed := &parsedProfile{
 		eventCounts:   map[string]int{"cpu": 8},
 		stacksByEvent: map[string]*stackFile{"cpu": sf},
 		timedEvents: map[string][]timedEvent{
@@ -3743,7 +3742,7 @@ func TestBucketSplit(t *testing.T) {
 	sf := makeStackFile([]stack{
 		{frames: []string{"A"}, lines: []uint32{0}, count: 4, thread: "t1"},
 	})
-	timed := &parsedJFR{
+	timed := &parsedProfile{
 		eventCounts:   map[string]int{"cpu": 4},
 		stacksByEvent: map[string]*stackFile{"cpu": sf},
 		timedEvents: map[string][]timedEvent{
@@ -3809,7 +3808,7 @@ func TestZeroWidthSplitDuration(t *testing.T) {
 		{frames: []string{"A"}, lines: []uint32{0}, count: 1},
 		{frames: []string{"B"}, lines: []uint32{0}, count: 2},
 	})
-	timed := &parsedJFR{
+	timed := &parsedProfile{
 		spanNanos:     10e9,
 		eventCounts:   map[string]int{"cpu": 3},
 		stacksByEvent: map[string]*stackFile{"cpu": sf},
@@ -3858,7 +3857,7 @@ func TestSplitExceedsScope(t *testing.T) {
 	sf := makeStackFile([]stack{
 		{frames: []string{"A"}, lines: []uint32{0}, count: 1},
 	})
-	timed := &parsedJFR{
+	timed := &parsedProfile{
 		spanNanos:     5e9,
 		eventCounts:   map[string]int{"cpu": 1},
 		stacksByEvent: map[string]*stackFile{"cpu": sf},
@@ -3901,7 +3900,7 @@ func TestSplitDurationStrings(t *testing.T) {
 	sf := makeStackFile([]stack{
 		{frames: []string{"A", "B"}, lines: []uint32{0, 0}, count: 9, thread: "t1"},
 	})
-	timed := &parsedJFR{
+	timed := &parsedProfile{
 		eventCounts:   map[string]int{"cpu": 9},
 		stacksByEvent: map[string]*stackFile{"cpu": sf},
 		timedEvents: map[string][]timedEvent{
@@ -3950,7 +3949,7 @@ func TestSplitMixedTypes(t *testing.T) {
 	sf := makeStackFile([]stack{
 		{frames: []string{"A"}, lines: []uint32{0}, count: 6, thread: "t1"},
 	})
-	timed := &parsedJFR{
+	timed := &parsedProfile{
 		eventCounts:   map[string]int{"cpu": 6},
 		stacksByEvent: map[string]*stackFile{"cpu": sf},
 		timedEvents: map[string][]timedEvent{
@@ -3999,7 +3998,7 @@ func TestSplitInvalidDuration(t *testing.T) {
 	sf := makeStackFile([]stack{
 		{frames: []string{"A"}, lines: []uint32{0}, count: 1, thread: "t1"},
 	})
-	timed := &parsedJFR{
+	timed := &parsedProfile{
 		eventCounts:   map[string]int{"cpu": 1},
 		stacksByEvent: map[string]*stackFile{"cpu": sf},
 		timedEvents: map[string][]timedEvent{
@@ -4027,7 +4026,7 @@ func TestSplitNegativeDuration(t *testing.T) {
 	sf := makeStackFile([]stack{
 		{frames: []string{"A"}, lines: []uint32{0}, count: 1, thread: "t1"},
 	})
-	timed := &parsedJFR{
+	timed := &parsedProfile{
 		eventCounts:   map[string]int{"cpu": 1},
 		stacksByEvent: map[string]*stackFile{"cpu": sf},
 		timedEvents: map[string][]timedEvent{
@@ -4057,7 +4056,7 @@ func TestSplitZeroSpanMetadata(t *testing.T) {
 	sf := makeStackFile([]stack{
 		{frames: []string{"A"}, lines: []uint32{0}, count: 4, thread: "t1"},
 	})
-	timed := &parsedJFR{
+	timed := &parsedProfile{
 		eventCounts:   map[string]int{"cpu": 4},
 		stacksByEvent: map[string]*stackFile{"cpu": sf},
 		timedEvents: map[string][]timedEvent{
@@ -4100,7 +4099,7 @@ print(parts[1].samples)
 func TestSplitZeroWidthScopedRejects(t *testing.T) {
 	// A zero-width scoped profile (scopedSpanNanos == 0) must reject positive split times.
 	sf := makeStackFile(nil)
-	timed := &parsedJFR{
+	timed := &parsedProfile{
 		eventCounts:   map[string]int{"cpu": 0},
 		stacksByEvent: map[string]*stackFile{"cpu": sf},
 		timedEvents:   map[string][]timedEvent{"cpu": {}},
@@ -4127,7 +4126,7 @@ func TestProfileStartEnd(t *testing.T) {
 	sf := makeStackFile([]stack{
 		{frames: []string{"A"}, lines: []uint32{0}, count: 5, thread: "t1"},
 	})
-	timed := &parsedJFR{
+	timed := &parsedProfile{
 		eventCounts:   map[string]int{"cpu": 5},
 		stacksByEvent: map[string]*stackFile{"cpu": sf},
 		spanNanos:     10e9,
@@ -4163,7 +4162,7 @@ func TestProfileStartEndScoped(t *testing.T) {
 	sf := makeStackFile([]stack{
 		{frames: []string{"A"}, lines: []uint32{0}, count: 6, thread: "t1"},
 	})
-	timed := &parsedJFR{
+	timed := &parsedProfile{
 		eventCounts:   map[string]int{"cpu": 6},
 		stacksByEvent: map[string]*stackFile{"cpu": sf},
 		timedEvents: map[string][]timedEvent{
@@ -4235,7 +4234,7 @@ func TestBucketProfileStartEnd(t *testing.T) {
 	sf := makeStackFile([]stack{
 		{frames: []string{"A"}, lines: []uint32{0}, count: 4, thread: "t1"},
 	})
-	timed := &parsedJFR{
+	timed := &parsedProfile{
 		eventCounts:   map[string]int{"cpu": 4},
 		stacksByEvent: map[string]*stackFile{"cpu": sf},
 		timedEvents: map[string][]timedEvent{

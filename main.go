@@ -4,8 +4,8 @@
 //
 //	ap-query <command> [flags] <file>
 //
-// Input: .jfr/.jfr.gz files are parsed as JFR binary; all other files and
-// stdin (-) are parsed as collapsed text.
+// Input: .jfr/.jfr.gz → JFR binary; .pb.gz/.pprof → pprof protobuf;
+// all other files → collapsed text; stdin (-) → auto-detect (binary = pprof, text = collapsed).
 //
 // Commands: hot, tree, trace, callers, threads, filter, events, collapse, diff, lines, info, timeline, script
 package main
@@ -37,8 +37,8 @@ var version = "dev"
 
 type profileContext struct {
 	sf            *stackFile
-	parsed        *parsedJFR // nil for collapsed input
-	isJFR         bool
+	parsed        *parsedProfile // nil for collapsed input
+	hasMetadata   bool
 	eventType     string
 	eventExplicit bool
 	eventCounts   map[string]int
@@ -99,11 +99,11 @@ func preprocessProfile(opts preprocessOpts) (*profileContext, error) {
 	path := opts.path
 	cmd := opts.command
 
-	if cmd == "timeline" && !isJFRPath(path) {
-		return nil, fmt.Errorf("timeline requires a JFR file")
+	if cmd == "timeline" && detectFormat(path) != formatJFR {
+		return nil, fmt.Errorf("timeline requires a JFR file (pprof and collapsed text lack per-sample timestamps)")
 	}
 
-	if needTimed && !isJFRPath(path) {
+	if needTimed && detectFormat(path) != formatJFR {
 		fmt.Fprintln(os.Stderr, "warning: --from/--to ignored for non-JFR input (no timestamps)")
 		needTimed = false
 		fromNanos = -1
@@ -115,16 +115,18 @@ func preprocessProfile(opts preprocessOpts) (*profileContext, error) {
 	}
 
 	var sf *stackFile
-	var parsed *parsedJFR
-	isJFR := false
+	var parsed *parsedProfile
+	hasMetadata := false
 	var eventCounts map[string]int
 	eventReason := eventReasonUnknown
 
-	if isJFRPath(path) {
-		isJFR = true
-		eventsToParse := allJFREventTypes()
+	format := detectFormat(path)
+	switch format {
+	case formatJFR:
+		hasMetadata = true
+		eventsToParse := allEventTypes()
 		if eventExplicit {
-			eventsToParse = singleJFREventType(eventType)
+			eventsToParse = singleEventType(eventType)
 		}
 		po := parseOpts{}
 		if needTimed {
@@ -163,11 +165,51 @@ func preprocessProfile(opts preprocessOpts) (*profileContext, error) {
 		if sf == nil {
 			sf = &stackFile{}
 		}
-	} else {
+	case formatPprof:
+		hasMetadata = true
+		eventsToParse := allEventTypes()
+		if eventExplicit {
+			eventsToParse = singleEventType(eventType)
+		}
 		var err error
-		sf, isJFR, err = openInput(path, eventType)
+		parsed, err = parsePprofData(path, eventsToParse)
 		if err != nil {
 			return nil, err
+		}
+		eventCounts = parsed.eventCounts
+		eventType, eventReason = resolveEventType(eventType, eventExplicit, eventCounts)
+		sf = parsed.stacksByEvent[eventType]
+		if sf == nil {
+			sf = &stackFile{}
+		}
+	default:
+		if path == "-" {
+			eventsToParse := allEventTypes()
+			if eventExplicit {
+				eventsToParse = singleEventType(eventType)
+			}
+			res, err := parseStdin(eventsToParse)
+			if err != nil {
+				return nil, err
+			}
+			if res.parsed != nil {
+				hasMetadata = true
+				parsed = res.parsed
+				eventCounts = parsed.eventCounts
+				eventType, eventReason = resolveEventType(eventType, eventExplicit, eventCounts)
+				sf = parsed.stacksByEvent[eventType]
+				if sf == nil {
+					sf = &stackFile{}
+				}
+			} else {
+				sf = res.sf
+			}
+		} else {
+			var err error
+			sf, hasMetadata, err = openInput(path, eventType)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -192,7 +234,7 @@ func preprocessProfile(opts preprocessOpts) (*profileContext, error) {
 	}
 
 	// Event selection info (skipped for info, timeline).
-	if isJFR && cmd != "info" && cmd != "timeline" {
+	if hasMetadata && cmd != "info" && cmd != "timeline" {
 		printEventSelectionForSingle(eventType, eventReason, eventCounts)
 	}
 
@@ -246,7 +288,7 @@ func preprocessProfile(opts preprocessOpts) (*profileContext, error) {
 	return &profileContext{
 		sf:            sf,
 		parsed:        parsed,
-		isJFR:         isJFR,
+		hasMetadata:   hasMetadata,
 		eventType:     eventType,
 		eventExplicit: eventExplicit,
 		eventCounts:   eventCounts,
@@ -297,22 +339,24 @@ func (s *sharedFlags) toOpts(path, command string) preprocessOpts {
 func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:     "ap-query <command> [flags] <file>",
-		Short:   "Analyze async-profiler profiles (JFR or collapsed text)",
+		Short:   "Analyze profiling data (JFR, pprof, or collapsed text)",
 		Version: version,
-		Long: `ap-query: analyze async-profiler profiles (JFR or collapsed text)
+		Long: `ap-query: analyze profiling data (JFR, pprof, or collapsed text)
 
 Input auto-detection:
-  .jfr / .jfr.gz  ->  JFR binary (supports --event selection)
-  everything else  ->  collapsed-stack text (one "frames count" per line)
-  -                ->  collapsed text from stdin
+  .jfr / .jfr.gz           ->  JFR binary (full feature set)
+  .pb.gz / .pb / .pprof    ->  pprof protobuf (no timeline/--from/--to)
+  everything else           ->  collapsed-stack text (one "frames count" per line)
+  -  (stdin)                ->  auto-detect: binary = pprof, text = collapsed
 
 Examples:
   ap-query info profile.jfr
   ap-query hot profile.jfr --event cpu --top 20
+  ap-query hot cpu.pb.gz
   ap-query timeline profile.jfr
   ap-query hot profile.jfr --from 5s --to 10s
   ap-query tree profile.jfr -m HashMap.resize --depth 6
-  ap-query diff before.jfr after.jfr --min-delta 0.5
+  ap-query diff before.jfr after.pb.gz --min-delta 0.5
   ap-query collapse profile.jfr --event wall | ap-query hot -
   echo "A;B;C 10" | ap-query hot -
 

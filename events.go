@@ -10,21 +10,38 @@ import (
 func newEventsCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "events <file>",
-		Short: "List event types in a JFR file (JFR only)",
+		Short: "List event types in a JFR or pprof file",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if !isJFRPath(args[0]) {
-				return fmt.Errorf("events command requires a JFR file")
+			path := args[0]
+			if path != "-" && detectFormat(path) == formatCollapsed {
+				return fmt.Errorf("events command requires a JFR or pprof file")
 			}
-			return cmdEvents(args[0])
+			return cmdEvents(path)
 		},
 	}
 }
 
 func cmdEvents(path string) error {
-	parsed, err := parseJFRData(path, nil, parseOpts{})
-	if err != nil {
-		return err
+	var parsed *parsedProfile
+	var err error
+	if path == "-" {
+		res, err := parseStdin(nil)
+		if err != nil {
+			return err
+		}
+		if res.parsed == nil {
+			return fmt.Errorf("events command requires a JFR or pprof file (stdin appears to be collapsed text)")
+		}
+		parsed = res.parsed
+	} else {
+		parsed, err = parseStructuredProfile(path, nil)
+		if err != nil {
+			return err
+		}
+	}
+	if parsed == nil {
+		return fmt.Errorf("events command requires a JFR or pprof file")
 	}
 	counts := parsed.eventCounts
 	if len(counts) == 0 {

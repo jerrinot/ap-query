@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"compress/gzip"
 	"encoding/binary"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"unicode/utf8"
 
 	"github.com/grafana/jfr-parser/parser"
 	"github.com/grafana/jfr-parser/parser/types"
@@ -205,7 +207,7 @@ type parseOpts struct {
 	toNanos           int64 // -1 = no filter
 }
 
-type parsedJFR struct {
+type parsedProfile struct {
 	eventCounts   map[string]int
 	stacksByEvent map[string]*stackFile
 	timedEvents   map[string][]timedEvent // nil when not collecting
@@ -315,7 +317,7 @@ func resolveStackTraceCached(p *parser.Parser, cache map[types.StackTraceRef]*ca
 	return cached
 }
 
-func allJFREventTypes() map[string]struct{} {
+func allEventTypes() map[string]struct{} {
 	return map[string]struct{}{
 		"cpu":   {},
 		"wall":  {},
@@ -324,7 +326,7 @@ func allJFREventTypes() map[string]struct{} {
 	}
 }
 
-func singleJFREventType(eventType string) map[string]struct{} {
+func singleEventType(eventType string) map[string]struct{} {
 	return map[string]struct{}{eventType: {}}
 }
 
@@ -467,7 +469,7 @@ func classifyEvent(p *parser.Parser, typ def.TypeID) (jfrEventInfo, bool) {
 	}
 }
 
-func parseJFRData(path string, stackEvents map[string]struct{}, opts parseOpts) (*parsedJFR, error) {
+func parseJFRData(path string, stackEvents map[string]struct{}, opts parseOpts) (*parsedProfile, error) {
 	buf, err := readJFRBytes(path)
 	if err != nil {
 		return nil, err
@@ -573,7 +575,7 @@ func parseJFRData(path string, stackEvents map[string]struct{}, opts parseOpts) 
 		}
 	}
 
-	return &parsedJFR{
+	return &parsedProfile{
 		eventCounts:   counts,
 		stacksByEvent: stacksByEvent,
 		timedEvents:   timedByEvent,
@@ -602,11 +604,8 @@ func filterIdleEvents(events []timedEvent) []timedEvent {
 // Collapsed-stack text → stackFile
 // ---------------------------------------------------------------------------
 
-// openReader opens a file for reading, handling gzip and stdin ("-").
+// openReader opens a file for reading, handling gzip decompression.
 func openReader(path string) (io.ReadCloser, error) {
-	if path == "-" {
-		return io.NopCloser(os.Stdin), nil
-	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -737,17 +736,48 @@ func parseCollapsed(r io.Reader) (*stackFile, error) {
 // Unified input: auto-detect JFR vs collapsed text
 // ---------------------------------------------------------------------------
 
-func isJFRPath(path string) bool {
+type profileFormat int
+
+const (
+	formatCollapsed profileFormat = iota
+	formatJFR
+	formatPprof
+)
+
+func detectFormat(path string) profileFormat {
 	if path == "-" {
-		return false
+		return formatCollapsed
 	}
 	p := strings.ToLower(path)
-	return strings.HasSuffix(p, ".jfr") || strings.HasSuffix(p, ".jfr.gz")
+	switch {
+	case strings.HasSuffix(p, ".jfr"), strings.HasSuffix(p, ".jfr.gz"):
+		return formatJFR
+	case strings.HasSuffix(p, ".pb.gz"), strings.HasSuffix(p, ".pb"),
+		strings.HasSuffix(p, ".pprof"), strings.HasSuffix(p, ".pprof.gz"):
+		return formatPprof
+	default:
+		return formatCollapsed
+	}
 }
 
-func openInput(path, eventType string) (sf *stackFile, isJFR bool, err error) {
-	if isJFRPath(path) {
-		parsed, err := parseJFRData(path, singleJFREventType(eventType), parseOpts{})
+// parseStructuredProfile dispatches to the appropriate parser for JFR or pprof.
+// Returns (nil, nil) for collapsed text format.
+func parseStructuredProfile(path string, stackEvents map[string]struct{}) (*parsedProfile, error) {
+	switch detectFormat(path) {
+	case formatJFR:
+		return parseJFRData(path, stackEvents, parseOpts{})
+	case formatPprof:
+		return parsePprofData(path, stackEvents)
+	default:
+		return nil, nil
+	}
+}
+
+func openInput(path, eventType string) (sf *stackFile, hasMetadata bool, err error) {
+	format := detectFormat(path)
+	switch format {
+	case formatJFR:
+		parsed, err := parseJFRData(path, singleEventType(eventType), parseOpts{})
 		if err != nil {
 			return nil, true, err
 		}
@@ -756,12 +786,77 @@ func openInput(path, eventType string) (sf *stackFile, isJFR bool, err error) {
 			sf = &stackFile{}
 		}
 		return sf, true, nil
+	case formatPprof:
+		parsed, err := parsePprofData(path, singleEventType(eventType))
+		if err != nil {
+			return nil, true, err
+		}
+		sf = parsed.stacksByEvent[eventType]
+		if sf == nil {
+			sf = &stackFile{}
+		}
+		return sf, true, nil
+	default:
+		rc, err := openReader(path)
+		if err != nil {
+			return nil, false, err
+		}
+		defer rc.Close()
+		sf, err = parseCollapsed(rc)
+		return sf, false, err
 	}
-	rc, err := openReader(path)
+}
+
+// stdinResult holds the result of parsing stdin with format auto-detection.
+type stdinResult struct {
+	parsed *parsedProfile // non-nil when stdin contained pprof (gzipped or raw)
+	sf     *stackFile     // non-nil when stdin contained collapsed text
+}
+
+// parseStdin reads all of stdin and auto-detects the format.
+// Binary content (gzip or raw protobuf) → pprof; printable text → collapsed.
+// When data looks binary but pprof parsing fails AND the data is valid UTF-8,
+// we fall back to collapsed (handles non-ASCII method names like café).
+// Invalid UTF-8 that also fails pprof is genuinely corrupt — we surface the error.
+func parseStdin(stackEvents map[string]struct{}) (stdinResult, error) {
+	data, err := io.ReadAll(os.Stdin)
 	if err != nil {
-		return nil, false, err
+		return stdinResult{}, err
 	}
-	defer rc.Close()
-	sf, err = parseCollapsed(rc)
-	return sf, false, err
+	if stdinLooksBinary(data) {
+		// Binary data — try pprof (profile.Parse handles gzip and raw protobuf).
+		parsed, pprofErr := parsePprofFromReader(bytes.NewReader(data), stackEvents)
+		if pprofErr == nil {
+			return stdinResult{parsed: parsed}, nil
+		}
+		// pprof failed. If the data is valid UTF-8, it's likely text with
+		// non-ASCII characters (e.g. accented method names) — fall back to
+		// collapsed. Otherwise it's corrupt binary — surface the error.
+		if !utf8.Valid(data) {
+			return stdinResult{}, fmt.Errorf("stdin: not valid pprof: %w", pprofErr)
+		}
+	}
+	sf, err := parseCollapsed(bytes.NewReader(data))
+	if err != nil {
+		return stdinResult{}, err
+	}
+	return stdinResult{sf: sf}, nil
+}
+
+// stdinLooksBinary returns true if data contains non-text bytes, indicating
+// binary content (gzip-compressed or raw protobuf) rather than collapsed text.
+// Collapsed text is printable ASCII (0x20–0x7E) plus whitespace (\n, \r, \t).
+// Anything outside that range — control chars below 0x20 or high bytes >= 0x7F
+// (protobuf varints, gzip framing, UTF-8 multibyte) — triggers the binary path.
+func stdinLooksBinary(data []byte) bool {
+	n := len(data)
+	if n > 256 {
+		n = 256
+	}
+	for _, b := range data[:n] {
+		if b > 0x7e || (b < 0x20 && b != '\n' && b != '\r' && b != '\t') {
+			return true
+		}
+	}
+	return false
 }

@@ -478,7 +478,7 @@ func TestCmdInfo(t *testing.T) {
 	})
 
 	out := captureOutput(func() {
-		cmdInfo(sf, infoOpts{eventType: "cpu", isJFR: true, eventCounts: map[string]int{"cpu": 15}, topThreads: 5, topMethods: 10})
+		cmdInfo(sf, infoOpts{eventType: "cpu", hasMetadata: true, eventCounts: map[string]int{"cpu": 15}, topThreads: 5, topMethods: 10})
 	})
 
 	if !strings.Contains(out, "=== THREADS (top") {
@@ -507,7 +507,7 @@ func TestCmdInfoDurationHeader(t *testing.T) {
 	})
 
 	out := captureOutput(func() {
-		cmdInfo(sf, infoOpts{eventType: "cpu", isJFR: true, eventCounts: map[string]int{"cpu": 100}, topThreads: 5, topMethods: 10, spanNanos: 30_000_000_000}) // 30s
+		cmdInfo(sf, infoOpts{eventType: "cpu", hasMetadata: true, eventCounts: map[string]int{"cpu": 100}, topThreads: 5, topMethods: 10, spanNanos: 30_000_000_000}) // 30s
 	})
 
 	if !strings.Contains(out, "Duration: 30.0s") {
@@ -542,7 +542,7 @@ func TestCmdInfoAlsoAvailable(t *testing.T) {
 	})
 
 	out := captureOutput(func() {
-		cmdInfo(sf, infoOpts{eventType: "wall", isJFR: true, eventCounts: map[string]int{"wall": 10, "cpu": 200, "alloc": 50}, topThreads: 5, topMethods: 10})
+		cmdInfo(sf, infoOpts{eventType: "wall", hasMetadata: true, eventCounts: map[string]int{"wall": 10, "cpu": 200, "alloc": 50}, topThreads: 5, topMethods: 10})
 	})
 
 	if !strings.Contains(out, "Event: wall") {
@@ -1094,7 +1094,7 @@ func TestCrossEventCombinedAssignment(t *testing.T) {
 	out := captureOutput(func() {
 		cmdInfo(cpuSF, infoOpts{
 			eventType:     "cpu",
-			isJFR:         true,
+			hasMetadata:   true,
 			eventCounts:   map[string]int{"cpu": 100, "wall": 100},
 			topThreads:    10,
 			topMethods:    10,
@@ -1127,7 +1127,7 @@ func TestCmdInfoCrossEventSkippedWithZeroSamples(t *testing.T) {
 	}
 
 	out := captureOutput(func() {
-		cmdInfo(cpuSF, infoOpts{eventType: "cpu", isJFR: true, eventCounts: map[string]int{"cpu": 10, "wall": 0}, topThreads: 5, topMethods: 10, stacksByEvent: stacksByEvent})
+		cmdInfo(cpuSF, infoOpts{eventType: "cpu", hasMetadata: true, eventCounts: map[string]int{"cpu": 10, "wall": 0}, topThreads: 5, topMethods: 10, stacksByEvent: stacksByEvent})
 	})
 
 	if strings.Contains(out, "=== CPU vs WALL ===") {
@@ -1160,7 +1160,7 @@ func TestCmdInfoCrossEventIdleFiltered(t *testing.T) {
 	out := captureOutput(func() {
 		cmdInfo(filteredCpuSF, infoOpts{
 			eventType:     "cpu",
-			isJFR:         true,
+			hasMetadata:   true,
 			eventCounts:   map[string]int{"cpu": 100, "wall": 100},
 			topThreads:    10,
 			topMethods:    10,
@@ -1203,7 +1203,7 @@ func TestCmdInfoCrossEvent(t *testing.T) {
 	}
 
 	out := captureOutput(func() {
-		cmdInfo(cpuSF, infoOpts{eventType: "cpu", isJFR: true, eventCounts: map[string]int{"cpu": 100, "wall": 100}, topThreads: 10, topMethods: 10, stacksByEvent: stacksByEvent})
+		cmdInfo(cpuSF, infoOpts{eventType: "cpu", hasMetadata: true, eventCounts: map[string]int{"cpu": 100, "wall": 100}, topThreads: 10, topMethods: 10, stacksByEvent: stacksByEvent})
 	})
 
 	if !strings.Contains(out, "=== CPU vs WALL ===") {
@@ -1235,7 +1235,7 @@ func TestCmdInfoCrossEventWallOnlyGroup(t *testing.T) {
 	}
 
 	out := captureOutput(func() {
-		cmdInfo(cpuSF, infoOpts{eventType: "cpu", isJFR: true, eventCounts: map[string]int{"cpu": 100, "wall": 100}, topThreads: 10, topMethods: 10, stacksByEvent: stacksByEvent})
+		cmdInfo(cpuSF, infoOpts{eventType: "cpu", hasMetadata: true, eventCounts: map[string]int{"cpu": 100, "wall": 100}, topThreads: 10, topMethods: 10, stacksByEvent: stacksByEvent})
 	})
 
 	// "io" group exists only in wall, should still appear with 0.0% CPU
@@ -1253,7 +1253,7 @@ func TestCmdInfoCrossEventSkippedWithNil(t *testing.T) {
 	})
 
 	out := captureOutput(func() {
-		cmdInfo(sf, infoOpts{eventType: "cpu", isJFR: true, eventCounts: map[string]int{"cpu": 10}, topThreads: 5, topMethods: 10})
+		cmdInfo(sf, infoOpts{eventType: "cpu", hasMetadata: true, eventCounts: map[string]int{"cpu": 10}, topThreads: 5, topMethods: 10})
 	})
 
 	if strings.Contains(out, "=== CPU vs WALL ===") {
@@ -1270,7 +1270,7 @@ func TestCmdInfoCrossEventSkippedWithOnlyOneSide(t *testing.T) {
 	}
 
 	out := captureOutput(func() {
-		cmdInfo(cpuSF, infoOpts{eventType: "cpu", isJFR: true, eventCounts: map[string]int{"cpu": 10}, topThreads: 5, topMethods: 10, stacksByEvent: stacksByEvent})
+		cmdInfo(cpuSF, infoOpts{eventType: "cpu", hasMetadata: true, eventCounts: map[string]int{"cpu": 10}, topThreads: 5, topMethods: 10, stacksByEvent: stacksByEvent})
 	})
 
 	if strings.Contains(out, "=== CPU vs WALL ===") {
@@ -1511,22 +1511,29 @@ func TestParseCollapsedMixedThreads(t *testing.T) {
 	}
 }
 
-func TestOpenInputDetection(t *testing.T) {
+func TestDetectFormat(t *testing.T) {
 	tests := []struct {
-		path    string
-		wantJFR bool
+		path string
+		want profileFormat
 	}{
-		{"profile.jfr", true},
-		{"profile.jfr.gz", true},
-		{"stacks.txt", false},
-		{"stacks.collapsed", false},
-		{"stacks.gz", false},
-		{"-", false},
+		{"profile.jfr", formatJFR},
+		{"profile.jfr.gz", formatJFR},
+		{"profile.JFR", formatJFR},
+		{"profile.JFR.GZ", formatJFR},
+		{"profile.pb.gz", formatPprof},
+		{"profile.pb", formatPprof},
+		{"profile.pprof", formatPprof},
+		{"profile.pprof.gz", formatPprof},
+		{"stacks.txt", formatCollapsed},
+		{"stacks.collapsed", formatCollapsed},
+		{"stacks.gz", formatCollapsed},
+		{"-", formatCollapsed},
+		{"unknown", formatCollapsed},
 	}
 	for _, tt := range tests {
-		got := isJFRPath(tt.path)
-		if got != tt.wantJFR {
-			t.Errorf("isJFRPath(%q) = %v, want %v", tt.path, got, tt.wantJFR)
+		got := detectFormat(tt.path)
+		if got != tt.want {
+			t.Errorf("detectFormat(%q) = %v, want %v", tt.path, got, tt.want)
 		}
 	}
 }
@@ -2859,12 +2866,12 @@ func TestOpenInputCollapsed(t *testing.T) {
 	path := filepath.Join(dir, "stacks.txt")
 	os.WriteFile(path, []byte("A;B;C 10\nX;Y 5\n"), 0644)
 
-	sf, isJFR, err := openInput(path, "cpu")
+	sf, hasMetadata, err := openInput(path, "cpu")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if isJFR {
-		t.Error("expected isJFR=false for .txt file")
+	if hasMetadata {
+		t.Error("expected hasMetadata=false for .txt file")
 	}
 	if len(sf.stacks) != 2 {
 		t.Errorf("expected 2 stacks, got %d", len(sf.stacks))
@@ -3289,13 +3296,13 @@ func TestJFRDiscoverEventsMulti(t *testing.T) {
 func TestParseJFRDataAllEventsMatchesSingleEventParsing(t *testing.T) {
 	path := jfrFixture("multi.jfr")
 
-	parsed, err := parseJFRData(path, allJFREventTypes(), parseOpts{})
+	parsed, err := parseJFRData(path, allEventTypes(), parseOpts{})
 	if err != nil {
 		t.Fatalf("parseJFRData: %v", err)
 	}
 
 	for _, eventType := range []string{"cpu", "wall", "alloc", "lock"} {
-		single, err := parseJFRData(path, singleJFREventType(eventType), parseOpts{})
+		single, err := parseJFRData(path, singleEventType(eventType), parseOpts{})
 		if err != nil {
 			t.Fatalf("parseJFRData(%s): %v", eventType, err)
 		}
@@ -3367,7 +3374,7 @@ func TestJFRInfoAutoSelectWall(t *testing.T) {
 	}
 
 	out := captureOutput(func() {
-		cmdInfo(sf, infoOpts{eventType: eventType, isJFR: true, eventCounts: eventCounts, topThreads: 10, topMethods: 20})
+		cmdInfo(sf, infoOpts{eventType: eventType, hasMetadata: true, eventCounts: eventCounts, topThreads: 10, topMethods: 20})
 	})
 	if !strings.Contains(out, "Event: wall") {
 		t.Errorf("expected 'Event: wall' in output, got:\n%s", out)
@@ -3393,7 +3400,7 @@ func TestJFRInfoAlsoAvailable(t *testing.T) {
 	eventCounts := parsed.eventCounts
 
 	out := captureOutput(func() {
-		cmdInfo(sf, infoOpts{eventType: "cpu", isJFR: true, eventCounts: eventCounts, topThreads: 10, topMethods: 20})
+		cmdInfo(sf, infoOpts{eventType: "cpu", hasMetadata: true, eventCounts: eventCounts, topThreads: 10, topMethods: 20})
 	})
 	if !strings.Contains(out, "Also available:") {
 		t.Errorf("expected 'Also available:' in output, got:\n%s", out)
@@ -4395,7 +4402,7 @@ func TestCollapseRoundTrip(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.fixture, func(t *testing.T) {
 			// 1. Parse JFR directly
-			parsed, err := parseJFRData(jfrFixture(tt.fixture), singleJFREventType(tt.event), parseOpts{})
+			parsed, err := parseJFRData(jfrFixture(tt.fixture), singleEventType(tt.event), parseOpts{})
 			if err != nil {
 				t.Fatalf("parseJFRData: %v", err)
 			}
@@ -5155,7 +5162,7 @@ func TestSuggestMethodsFQNCollision(t *testing.T) {
 }
 
 func TestTimelineNoMatchMethod(t *testing.T) {
-	parsed := &parsedJFR{
+	parsed := &parsedProfile{
 		timedEvents: map[string][]timedEvent{
 			"cpu": {
 				{offsetNanos: 0, frames: []string{"A.a", "B.b"}, lines: []uint32{0, 0}, thread: "main", weight: 1},
@@ -5183,7 +5190,7 @@ func TestTimelineNoMatchMethod(t *testing.T) {
 func TestTimelineNoMatchAfterThreadFilter(t *testing.T) {
 	// Method exists in "worker" thread but not in "http" thread.
 	// After thread filter, suggestions should only show methods from filtered view.
-	parsed := &parsedJFR{
+	parsed := &parsedProfile{
 		timedEvents: map[string][]timedEvent{
 			"cpu": {
 				{offsetNanos: 0, frames: []string{"Worker.run", "Worker.process"}, lines: []uint32{0, 0}, thread: "worker-1", weight: 1},
@@ -5513,7 +5520,7 @@ func TestScanChunkHeadersCorrupt(t *testing.T) {
 }
 
 func TestWallSampleWeight(t *testing.T) {
-	parsed, err := parseJFRData(jfrFixture("wall.jfr"), singleJFREventType("wall"), parseOpts{
+	parsed, err := parseJFRData(jfrFixture("wall.jfr"), singleEventType("wall"), parseOpts{
 		collectTimestamps: true,
 		fromNanos:         -1,
 		toNanos:           -1,
@@ -5570,7 +5577,7 @@ func TestFromToValidation(t *testing.T) {
 
 func TestFromToFiltering(t *testing.T) {
 	// Parse cpu.jfr with full range.
-	parsedFull, err := parseJFRData(jfrFixture("cpu.jfr"), singleJFREventType("cpu"), parseOpts{
+	parsedFull, err := parseJFRData(jfrFixture("cpu.jfr"), singleEventType("cpu"), parseOpts{
 		collectTimestamps: true,
 		fromNanos:         -1,
 		toNanos:           -1,
@@ -5581,7 +5588,7 @@ func TestFromToFiltering(t *testing.T) {
 	fullEvents := parsedFull.timedEvents["cpu"]
 
 	// Parse with a narrow time range (first 1 second).
-	parsedFiltered, err := parseJFRData(jfrFixture("cpu.jfr"), singleJFREventType("cpu"), parseOpts{
+	parsedFiltered, err := parseJFRData(jfrFixture("cpu.jfr"), singleEventType("cpu"), parseOpts{
 		collectTimestamps: true,
 		fromNanos:         0,
 		toNanos:           1_000_000_000,
@@ -5608,7 +5615,7 @@ func TestFromToFiltering(t *testing.T) {
 }
 
 func TestCmdTimeline(t *testing.T) {
-	parsed, err := parseJFRData(jfrFixture("cpu.jfr"), allJFREventTypes(), parseOpts{
+	parsed, err := parseJFRData(jfrFixture("cpu.jfr"), allEventTypes(), parseOpts{
 		collectTimestamps: true,
 		fromNanos:         -1,
 		toNanos:           -1,
@@ -5646,7 +5653,7 @@ func TestCmdTimeline(t *testing.T) {
 }
 
 func TestCmdTimelineMethod(t *testing.T) {
-	parsed, err := parseJFRData(jfrFixture("cpu.jfr"), allJFREventTypes(), parseOpts{
+	parsed, err := parseJFRData(jfrFixture("cpu.jfr"), allEventTypes(), parseOpts{
 		collectTimestamps: true,
 		fromNanos:         -1,
 		toNanos:           -1,
@@ -5663,7 +5670,7 @@ func TestCmdTimelineMethod(t *testing.T) {
 }
 
 func TestCmdTimelineTopMethod(t *testing.T) {
-	parsed, err := parseJFRData(jfrFixture("cpu.jfr"), allJFREventTypes(), parseOpts{
+	parsed, err := parseJFRData(jfrFixture("cpu.jfr"), allEventTypes(), parseOpts{
 		collectTimestamps: true,
 		fromNanos:         -1,
 		toNanos:           -1,
@@ -5689,7 +5696,7 @@ func TestCmdTimelineTopMethod(t *testing.T) {
 }
 
 func TestCmdTimelineTopMethodAggregatesLeafSelfCounts(t *testing.T) {
-	parsed := &parsedJFR{
+	parsed := &parsedProfile{
 		timedEvents: map[string][]timedEvent{
 			"cpu": {
 				{offsetNanos: 100, stackKey: "A;X", frames: []string{"A", "X"}, lines: []uint32{0, 0}, weight: 2},
@@ -5716,7 +5723,7 @@ func TestCmdTimelineHide(t *testing.T) {
 	// B appears as leaf in 10 samples (from hidden X stack).
 	// Y appears as leaf in 5 samples.
 	// So B should be the hot method, not X.
-	parsed := &parsedJFR{
+	parsed := &parsedProfile{
 		timedEvents: map[string][]timedEvent{
 			"cpu": {
 				{offsetNanos: 0, stackKey: "A;B;X", frames: []string{"A", "B", "X"}, lines: []uint32{0, 0, 0}, weight: 10},
@@ -5742,7 +5749,7 @@ func TestCmdTimelineHide(t *testing.T) {
 
 func TestCmdTimelineZeroSpan(t *testing.T) {
 	// Single event at offset 0 — should not panic, should show 1 bucket.
-	parsed := &parsedJFR{
+	parsed := &parsedProfile{
 		timedEvents: map[string][]timedEvent{
 			"cpu": {{offsetNanos: 0, stackKey: "A;B", frames: []string{"A", "B"}, lines: []uint32{0, 0}, weight: 1}},
 		},
@@ -5760,20 +5767,20 @@ func TestCmdTimelineZeroSpan(t *testing.T) {
 }
 
 func TestCmdTimelineCollapsed(t *testing.T) {
-	// timeline requires JFR — verify isJFRPath returns false for non-JFR paths.
-	if isJFRPath("-") {
-		t.Error("expected isJFRPath(-) = false")
+	// timeline requires JFR — verify detectFormat returns non-JFR for text paths.
+	if detectFormat("-") != formatCollapsed {
+		t.Error("expected detectFormat(-) = formatCollapsed")
 	}
-	if isJFRPath("foo.txt") {
-		t.Error("expected isJFRPath(foo.txt) = false")
+	if detectFormat("foo.txt") != formatCollapsed {
+		t.Error("expected detectFormat(foo.txt) = formatCollapsed")
 	}
-	if !isJFRPath("foo.jfr") {
-		t.Error("expected isJFRPath(foo.jfr) = true")
+	if detectFormat("foo.jfr") != formatJFR {
+		t.Error("expected detectFormat(foo.jfr) = formatJFR")
 	}
 }
 
 func TestCmdTimelineResolution(t *testing.T) {
-	parsed, err := parseJFRData(jfrFixture("cpu.jfr"), allJFREventTypes(), parseOpts{
+	parsed, err := parseJFRData(jfrFixture("cpu.jfr"), allEventTypes(), parseOpts{
 		collectTimestamps: true,
 		fromNanos:         -1,
 		toNanos:           -1,
@@ -5790,7 +5797,7 @@ func TestCmdTimelineResolution(t *testing.T) {
 }
 
 func TestCmdTimelineFromTo(t *testing.T) {
-	parsed, err := parseJFRData(jfrFixture("cpu.jfr"), allJFREventTypes(), parseOpts{
+	parsed, err := parseJFRData(jfrFixture("cpu.jfr"), allEventTypes(), parseOpts{
 		collectTimestamps: true,
 		fromNanos:         1_000_000_000,
 		toNanos:           3_000_000_000,
@@ -5816,7 +5823,7 @@ func TestCmdTimelineFromTo(t *testing.T) {
 }
 
 func TestCmdTimelineFromOnly(t *testing.T) {
-	parsed, err := parseJFRData(jfrFixture("cpu.jfr"), allJFREventTypes(), parseOpts{
+	parsed, err := parseJFRData(jfrFixture("cpu.jfr"), allEventTypes(), parseOpts{
 		collectTimestamps: true,
 		fromNanos:         1_000_000_000,
 		toNanos:           -1,
@@ -5840,7 +5847,7 @@ func TestCmdTimelineFromOnly(t *testing.T) {
 
 func TestFromBeyondSpanWarning(t *testing.T) {
 	path := jfrFixture("cpu.jfr")
-	parsed, err := parseJFRData(path, allJFREventTypes(), parseOpts{
+	parsed, err := parseJFRData(path, allEventTypes(), parseOpts{
 		collectTimestamps: true,
 		fromNanos:         -1,
 		toNanos:           -1,
@@ -5863,7 +5870,7 @@ func TestFromBeyondSpanWarning(t *testing.T) {
 
 func TestToClamping(t *testing.T) {
 	path := jfrFixture("cpu.jfr")
-	parsed, err := parseJFRData(path, allJFREventTypes(), parseOpts{
+	parsed, err := parseJFRData(path, allEventTypes(), parseOpts{
 		collectTimestamps: true,
 		fromNanos:         -1,
 		toNanos:           -1,
@@ -5965,7 +5972,7 @@ func TestTimelineBucketCountBound(t *testing.T) {
 		t.Fatalf("expected max bucket validation, got %q", stderr)
 	}
 
-	parsed, err := parseJFRData(path, singleJFREventType("cpu"), parseOpts{
+	parsed, err := parseJFRData(path, singleEventType("cpu"), parseOpts{
 		collectTimestamps: true,
 		fromNanos:         -1,
 		toNanos:           -1,
@@ -6035,7 +6042,7 @@ func TestBoundedFallbackWarning(t *testing.T) {
 func TestTimedCollectionGatedByEventType(t *testing.T) {
 	// multi.jfr has cpu, wall, alloc, and lock events.
 	// When requesting only cpu, the other types must not appear in timedByEvent.
-	parsed, err := parseJFRData(jfrFixture("multi.jfr"), singleJFREventType("cpu"), parseOpts{
+	parsed, err := parseJFRData(jfrFixture("multi.jfr"), singleEventType("cpu"), parseOpts{
 		collectTimestamps: true,
 		fromNanos:         -1,
 		toNanos:           -1,
@@ -6055,7 +6062,7 @@ func TestTimedCollectionGatedByEventType(t *testing.T) {
 
 func TestTimelineFromBeyondSpanClampsToZero(t *testing.T) {
 	// When --from is past the recording span without --to, bucketSpan should be 0 (single bucket).
-	parsed := &parsedJFR{
+	parsed := &parsedProfile{
 		timedEvents: map[string][]timedEvent{
 			"cpu": {{offsetNanos: 100_000_000_000, stackKey: "A;B", frames: []string{"A", "B"}, lines: []uint32{0, 0}, weight: 1}},
 		},
@@ -6075,7 +6082,7 @@ func TestTimelineFromToBothBeyondSpan(t *testing.T) {
 	// When both --from and --to are past the recording span, clamping must not
 	// produce a negative span (toNanos < fromNanos). Both get clamped to spanNanos,
 	// yielding a zero-width window and a single empty bucket.
-	parsed := &parsedJFR{
+	parsed := &parsedProfile{
 		timedEvents: map[string][]timedEvent{
 			"cpu": {},
 		},
@@ -6100,7 +6107,7 @@ func TestTimelineFromToBothBeyondSpan(t *testing.T) {
 }
 
 func TestCmdTimelineSubSecondResolutionLabels(t *testing.T) {
-	parsed := &parsedJFR{
+	parsed := &parsedProfile{
 		timedEvents: map[string][]timedEvent{
 			"cpu": {
 				{
@@ -6205,7 +6212,7 @@ func TestBuildStackFileFromTimed(t *testing.T) {
 
 func TestEventSelectionAfterFilter(t *testing.T) {
 	// Parse multi.jfr with a time range that may exclude some event types.
-	parsed, err := parseJFRData(jfrFixture("multi.jfr"), allJFREventTypes(), parseOpts{
+	parsed, err := parseJFRData(jfrFixture("multi.jfr"), allEventTypes(), parseOpts{
 		collectTimestamps: true,
 		fromNanos:         -1,
 		toNanos:           -1,
@@ -6242,7 +6249,7 @@ func TestWarnedLargeEventCountOnce(t *testing.T) {
 	path := jfrFixture("cpu.jfr")
 	call := func() string {
 		return captureStream(&os.Stderr, func() {
-			parseJFRData(path, allJFREventTypes(), parseOpts{collectTimestamps: true, fromNanos: -1, toNanos: -1})
+			parseJFRData(path, allEventTypes(), parseOpts{collectTimestamps: true, fromNanos: -1, toNanos: -1})
 		})
 	}
 
@@ -6548,7 +6555,7 @@ func TestNoIdleHintBelowThreshold(t *testing.T) {
 }
 
 func TestCmdTimelineTop(t *testing.T) {
-	parsed, err := parseJFRData(jfrFixture("cpu.jfr"), allJFREventTypes(), parseOpts{
+	parsed, err := parseJFRData(jfrFixture("cpu.jfr"), allEventTypes(), parseOpts{
 		collectTimestamps: true,
 		fromNanos:         -1,
 		toNanos:           -1,
@@ -6589,7 +6596,7 @@ func TestCmdTimelineTop(t *testing.T) {
 }
 
 func TestCmdTimelineTopExceedsBuckets(t *testing.T) {
-	parsed, err := parseJFRData(jfrFixture("cpu.jfr"), allJFREventTypes(), parseOpts{
+	parsed, err := parseJFRData(jfrFixture("cpu.jfr"), allEventTypes(), parseOpts{
 		collectTimestamps: true,
 		fromNanos:         -1,
 		toNanos:           -1,
@@ -6618,7 +6625,7 @@ func TestCmdTimelineTopExceedsBuckets(t *testing.T) {
 }
 
 func TestCmdTimelinePct(t *testing.T) {
-	parsed, err := parseJFRData(jfrFixture("cpu.jfr"), allJFREventTypes(), parseOpts{
+	parsed, err := parseJFRData(jfrFixture("cpu.jfr"), allEventTypes(), parseOpts{
 		collectTimestamps: true,
 		fromNanos:         -1,
 		toNanos:           -1,
@@ -6650,7 +6657,7 @@ func TestCmdTimelinePct(t *testing.T) {
 }
 
 func TestCmdTimelinePctEmptyBucket(t *testing.T) {
-	parsed, err := parseJFRData(jfrFixture("cpu.jfr"), allJFREventTypes(), parseOpts{
+	parsed, err := parseJFRData(jfrFixture("cpu.jfr"), allEventTypes(), parseOpts{
 		collectTimestamps: true,
 		fromNanos:         -1,
 		toNanos:           -1,
@@ -6697,7 +6704,7 @@ func TestCmdTimelinePctFlagBeforeFile(t *testing.T) {
 }
 
 func TestCmdTimelineTopWithPct(t *testing.T) {
-	parsed, err := parseJFRData(jfrFixture("cpu.jfr"), allJFREventTypes(), parseOpts{
+	parsed, err := parseJFRData(jfrFixture("cpu.jfr"), allEventTypes(), parseOpts{
 		collectTimestamps: true,
 		fromNanos:         -1,
 		toNanos:           -1,

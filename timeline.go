@@ -118,7 +118,7 @@ func computeBucketWidth(bucketSpan int64, buckets int, resolution string) (numBu
 	return numBuckets, bucketWidth, nil
 }
 
-func cmdTimeline(parsed *parsedJFR, eventType string,
+func cmdTimeline(parsed *parsedProfile, eventType string,
 	buckets int, resolution string, method string, topMethod bool,
 	noIdle bool, hide *regexp.Regexp, thread string, fromNanos, toNanos int64,
 	topN int, pct bool) error {

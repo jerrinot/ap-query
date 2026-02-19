@@ -62,7 +62,7 @@ func TestJFRMultiChunkFixtureHasMultipleChunks(t *testing.T) {
 		t.Fatalf("expected at least 2 chunks, got %d", chunks)
 	}
 
-	parsed, err := parseJFRData(path, singleJFREventType("cpu"), parseOpts{})
+	parsed, err := parseJFRData(path, singleEventType("cpu"), parseOpts{})
 	if err != nil {
 		t.Fatalf("parseJFRData: %v", err)
 	}
@@ -74,11 +74,11 @@ func TestJFRMultiChunkFixtureHasMultipleChunks(t *testing.T) {
 func TestParseJFRDataMultiChunkAllEventsMatchesSingleCPU(t *testing.T) {
 	path := jfrFixture("multichunk.jfr")
 
-	parsedAll, err := parseJFRData(path, allJFREventTypes(), parseOpts{})
+	parsedAll, err := parseJFRData(path, allEventTypes(), parseOpts{})
 	if err != nil {
 		t.Fatalf("parseJFRData(all): %v", err)
 	}
-	parsedCPU, err := parseJFRData(path, singleJFREventType("cpu"), parseOpts{})
+	parsedCPU, err := parseJFRData(path, singleEventType("cpu"), parseOpts{})
 	if err != nil {
 		t.Fatalf("parseJFRData(cpu): %v", err)
 	}

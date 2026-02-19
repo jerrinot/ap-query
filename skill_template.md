@@ -1,18 +1,24 @@
 ---
 name: jfr
 description: >
-  JVM profiling: JFR, async-profiler, hot methods, flame graph, cpu/wall/alloc/lock,
+  Profiling: JFR, pprof, async-profiler, hot methods, flame graph, cpu/wall/alloc/lock,
   performance regression, collapsed stacks.
 allowed-tools: Bash, Read, Grep, Glob
 ---
 
-# JFR Performance Analysis
+# Performance Analysis
 
-Analyze async-profiler JFR recordings with `{{AP_QUERY_PATH}}`.
+Analyze profiling data with `{{AP_QUERY_PATH}}`.
 Run `{{AP_QUERY_PATH}} --help` for full command and flag reference.
 Run `{{AP_QUERY_PATH}} <command> --help` for command-specific help.
 
-Always prefer JFR format over collapsed text. JFR preserves event types (cpu/wall/alloc/lock),
+Supported input formats:
+- **JFR** (`.jfr`, `.jfr.gz`) — async-profiler recordings. Full feature set including timeline, `--from`/`--to`, threads, `split()`.
+- **pprof** (`.pb.gz`, `.pb`, `.pprof`, `.pprof.gz`) — Go runtime, pprof-rs, gperftools, py-spy, OTel. Supports hot/tree/callers/trace/diff/filter/collapse/lines/events/info/script. No timeline or `--from`/`--to` (pprof lacks per-sample timestamps).
+- **Collapsed text** — one `frame;frame;frame count` per line. Most basic format, no event types or line numbers.
+- **stdin** (`-`) — auto-detected: binary = pprof, text = collapsed.
+
+Always prefer JFR or pprof over collapsed text. Both preserve event types (cpu/wall/alloc/lock),
 line numbers, and thread info — collapsed text loses event separation and may lack line data.
 If the user has collapsed text, `{{AP_QUERY_PATH}}` accepts it, but suggest re-profiling with
 `{{ASPROF_PATH}} -o jfr` if they need deeper analysis.
@@ -55,10 +61,15 @@ Use `{{ASPROF_PATH}}` to record profiles. Common invocations:
 When unsure, start with `cpu`. Switch to `wall` if the profile shows low CPU but high latency.
 Use `--no-idle` with wall to strip idle leaf frames (futex, sleep, park, epoll_wait) and see only active work.
 
+**pprof SampleType mapping**: pprof profiles map SampleTypes to these events automatically.
+When multiple SampleTypes map to the same event, the highest-fidelity value wins
+(e.g. `cpu/nanoseconds` over `samples/count`, `alloc_space/bytes` over `alloc_objects/count`).
+
 ## Time-range filtering (`--from`/`--to`)
 
 Use `--from DURATION` and `--to DURATION` (relative to recording start) to restrict any command
-to a time window. JFR only. Values use Go duration syntax: `500ms`, `2s`, `1m30s`.
+to a time window. **JFR only** — pprof and collapsed text lack per-sample timestamps.
+Values use Go duration syntax: `500ms`, `2s`, `1m30s`.
 
 - `{{AP_QUERY_PATH}} hot profile.jfr --from 12s --to 14s` — hot methods in a 2-second window.
 - `{{AP_QUERY_PATH}} timeline profile.jfr --from 5s --to 15s` — timeline of a 10-second slice.

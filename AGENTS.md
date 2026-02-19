@@ -25,6 +25,7 @@
 - Never apply hacks, workarounds, or dirty fixes. Find and fix the root cause.
 - If something is a bug, treat it as a bug regardless of how unlikely it is.
 - Don't be lazy or sloppy. There is no deadline — take all the time and tokens needed for a proper solution.
+- During reviews, act on dead code, unreachable branches, stale comments, and unused imports — don't just note them. Tidy up even when it's not a functional bug.
 
 ## Coding Style & Naming Conventions
 - Follow idiomatic Go formatting and structure; run `gofmt` before committing.

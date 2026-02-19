@@ -16,9 +16,9 @@ import (
 
 type starlarkProfile struct {
 	sf                *stackFile
-	parsed            *parsedJFR
-	timedParsed       *parsedJFR   // lazy re-parse with timestamps
-	scopedEvents      []timedEvent // non-nil for split-derived profiles (preserves temporal identity)
+	parsed            *parsedProfile
+	timedParsed       *parsedProfile // lazy re-parse with timestamps
+	scopedEvents      []timedEvent   // non-nil for split-derived profiles (preserves temporal identity)
 	event             string
 	events            []string
 	path              string
@@ -29,7 +29,7 @@ type starlarkProfile struct {
 	stackList         *starlark.List // cached
 }
 
-func newStarlarkProfile(sf *stackFile, parsed *parsedJFR, event, path string) *starlarkProfile {
+func newStarlarkProfile(sf *stackFile, parsed *parsedProfile, event, path string) *starlarkProfile {
 	var events []string
 	if parsed != nil {
 		for e := range parsed.eventCounts {
@@ -256,7 +256,7 @@ func computeBucketWidthSafe(bucketSpan int64, buckets int, resolution string) (i
 	return computeBucketWidth(bucketSpan, buckets, resolution)
 }
 
-func (p *starlarkProfile) ensureTimedParsed() (*parsedJFR, error) {
+func (p *starlarkProfile) ensureTimedParsed() (*parsedProfile, error) {
 	if p.timedParsed != nil {
 		return p.timedParsed, nil
 	}
@@ -266,10 +266,10 @@ func (p *starlarkProfile) ensureTimedParsed() (*parsedJFR, error) {
 		return p.timedParsed, nil
 	}
 	// Re-parse with timestamps.
-	if !isJFRPath(p.path) {
-		return nil, nil // collapsed text has no timestamps
+	if detectFormat(p.path) != formatJFR {
+		return nil, nil // only JFR supports per-sample timestamps
 	}
-	parsed, err := parseJFRData(p.path, allJFREventTypes(), parseOpts{collectTimestamps: true, fromNanos: -1, toNanos: -1})
+	parsed, err := parseJFRData(p.path, allEventTypes(), parseOpts{collectTimestamps: true, fromNanos: -1, toNanos: -1})
 	if err != nil {
 		return nil, fmt.Errorf("timeline: %v", err)
 	}
@@ -279,7 +279,7 @@ func (p *starlarkProfile) ensureTimedParsed() (*parsedJFR, error) {
 
 // resolveTimedEvents returns the timed events for this profile, respecting both
 // temporal scope (from split) and stack-set scope (from filter/group_by/thread).
-func (p *starlarkProfile) resolveTimedEvents(timed *parsedJFR) []timedEvent {
+func (p *starlarkProfile) resolveTimedEvents(timed *parsedProfile) []timedEvent {
 	source := timed.timedEvents[p.event]
 	if p.scopedEvents != nil {
 		source = p.scopedEvents
@@ -357,7 +357,7 @@ func (p *starlarkProfile) methodTimeline(_ *starlark.Thread, b *starlark.Builtin
 		return nil, err
 	}
 	if timed == nil {
-		return starlark.NewList(nil), nil
+		return nil, fmt.Errorf("timeline: requires JFR data (pprof and collapsed text lack per-sample timestamps)")
 	}
 
 	events := p.resolveTimedEvents(timed)
@@ -427,7 +427,7 @@ func (p *starlarkProfile) methodSplit(_ *starlark.Thread, b *starlark.Builtin, a
 		return nil, err
 	}
 	if timed == nil {
-		return nil, fmt.Errorf("split: requires JFR data (collapsed text has no timestamps)")
+		return nil, fmt.Errorf("split: requires JFR data (pprof and collapsed text lack per-sample timestamps)")
 	}
 
 	events := p.resolveTimedEvents(timed)

@@ -33,41 +33,67 @@ func newDiffCmd() *cobra.Command {
 				return fmt.Errorf("unknown event type %q (valid: cpu, wall, alloc, lock)", eventType)
 			}
 
-			eventsToParse := allJFREventTypes()
+			eventsToParse := allEventTypes()
 			if eventExplicit {
-				eventsToParse = singleJFREventType(eventType)
+				eventsToParse = singleEventType(eventType)
 			}
 
-			var beforeEventCounts map[string]int
-			var beforeStacksByEvent map[string]*stackFile
-			if isJFRPath(beforePath) {
-				parsed, err := parseJFRData(beforePath, eventsToParse, parseOpts{})
-				if err != nil {
-					return err
-				}
-				beforeEventCounts = parsed.eventCounts
-				beforeStacksByEvent = parsed.stacksByEvent
+			// Parse each side for metadata. Structured formats (JFR/pprof)
+			// yield a parsedProfile with eventCounts for event resolution.
+			// Stdin is parsed eagerly (can only be read once).
+			type diffSide struct {
+				parsed      *parsedProfile // non-nil for JFR/pprof
+				collapsedSF *stackFile     // non-nil for collapsed stdin
 			}
-			var afterEventCounts map[string]int
-			var afterStacksByEvent map[string]*stackFile
-			if isJFRPath(afterPath) {
-				parsed, err := parseJFRData(afterPath, eventsToParse, parseOpts{})
-				if err != nil {
-					return err
+			parseSide := func(path string) (diffSide, error) {
+				if path == "-" {
+					res, err := parseStdin(eventsToParse)
+					if err != nil {
+						return diffSide{}, err
+					}
+					if res.parsed != nil {
+						return diffSide{parsed: res.parsed}, nil
+					}
+					return diffSide{collapsedSF: res.sf}, nil
 				}
-				afterEventCounts = parsed.eventCounts
-				afterStacksByEvent = parsed.stacksByEvent
+				p, err := parseStructuredProfile(path, eventsToParse)
+				if err != nil {
+					return diffSide{}, err
+				}
+				if p != nil {
+					return diffSide{parsed: p}, nil
+				}
+				return diffSide{}, nil
+			}
+
+			beforeSide, err := parseSide(beforePath)
+			if err != nil {
+				return err
+			}
+			afterSide, err := parseSide(afterPath)
+			if err != nil {
+				return err
+			}
+
+			var beforeEventCounts, afterEventCounts map[string]int
+			if beforeSide.parsed != nil {
+				beforeEventCounts = beforeSide.parsed.eventCounts
+			}
+			if afterSide.parsed != nil {
+				afterEventCounts = afterSide.parsed.eventCounts
 			}
 			eventType, eventReason := resolveEventTypeForDiff(eventType, eventExplicit, beforeEventCounts, afterEventCounts)
 
 			var before *stackFile
-			if beforeStacksByEvent != nil {
-				before = beforeStacksByEvent[eventType]
+			switch {
+			case beforeSide.parsed != nil:
+				before = beforeSide.parsed.stacksByEvent[eventType]
 				if before == nil {
 					before = &stackFile{}
 				}
-			} else {
-				var err error
+			case beforeSide.collapsedSF != nil:
+				before = beforeSide.collapsedSF
+			default:
 				before, _, err = openInput(beforePath, eventType)
 				if err != nil {
 					return err
@@ -75,13 +101,15 @@ func newDiffCmd() *cobra.Command {
 			}
 
 			var after *stackFile
-			if afterStacksByEvent != nil {
-				after = afterStacksByEvent[eventType]
+			switch {
+			case afterSide.parsed != nil:
+				after = afterSide.parsed.stacksByEvent[eventType]
 				if after == nil {
 					after = &stackFile{}
 				}
-			} else {
-				var err error
+			case afterSide.collapsedSF != nil:
+				after = afterSide.collapsedSF
+			default:
 				after, _, err = openInput(afterPath, eventType)
 				if err != nil {
 					return err

@@ -13,7 +13,7 @@ Starlark built-ins available: len, sorted, enumerate, range, str, int, float,
 
 Functions:
   open(path, event="cpu", start="", end="", thread="") → Profile
-      Load a JFR or collapsed-text profile.
+      Load a profile (JFR, pprof, or collapsed text). stdin: open("-").
       event: cpu, wall, alloc, lock.
       start/end: time window, Go duration syntax (e.g. "5s", "1m30s"). JFR only.
       thread: substring match on thread name.
@@ -46,9 +46,9 @@ Types:
   Profile — a loaded profile scoped to one event type
     .stacks        list[Stack]
     .samples       int — total sample count
-    .duration      float — seconds (0 for collapsed text)
-    .start         float — seconds from recording start (0 for root/collapsed)
-    .end           float — seconds from recording start (= duration for root, 0 for collapsed)
+    .duration      float — seconds (0 when unavailable: collapsed text, some pprof producers)
+    .start         float — seconds from recording start (0 for root profiles)
+    .end           float — seconds from recording start (= duration for root profiles)
     .event         string — selected event type
     .events        list[string] — all event types in the file
     .path          string
@@ -129,9 +129,14 @@ Starlark notes:
 
 Examples:
 
-  # Hot methods
+  # Hot methods (JFR)
   p = open("profile.jfr")
   for m in p.hot(5):
+      print(rjust(round(m.self_pct, 1), 6) + "%  " + m.name)
+
+  # Hot methods (pprof — same API, different format)
+  p = open("cpu.pb.gz")
+  for m in p.hot(10):
       print(rjust(round(m.self_pct, 1), 6) + "%  " + m.name)
 
   # Filter + emit pipeline:  ap-query script -c '...' | ap-query hot -

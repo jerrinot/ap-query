@@ -225,7 +225,9 @@ func builtinOpen(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, k
 		return nil, fmt.Errorf("open: unknown event type %q (valid: cpu, wall, alloc, lock)", event)
 	}
 
-	if isJFRPath(path) {
+	format := detectFormat(path)
+	switch format {
+	case formatJFR:
 		opts := parseOpts{fromNanos: -1, toNanos: -1}
 
 		if start != "" {
@@ -245,41 +247,92 @@ func builtinOpen(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, k
 			opts.collectTimestamps = true
 		}
 
-		parsed, err := parseJFRData(path, allJFREventTypes(), opts)
+		parsed, err := parseJFRData(path, allEventTypes(), opts)
 		if err != nil {
 			return nil, fmt.Errorf("open: %v", err)
 		}
 
-		if parsed.eventCounts[event] == 0 {
-			available := make([]string, 0, len(parsed.eventCounts))
-			for e := range parsed.eventCounts {
-				available = append(available, e)
-			}
-			if len(available) == 0 {
-				return nil, fmt.Errorf("open: no events found in %s", path)
-			}
-			return nil, fmt.Errorf("open: event %q not found in %s (available: %s)", event, path, strings.Join(available, ", "))
+		if err := validateOpenEvent(parsed.eventCounts, event, path); err != nil {
+			return nil, err
+		}
+		return openProfileResult(parsed, event, thread, path), nil
+
+	case formatPprof:
+		if start != "" || end != "" {
+			return nil, fmt.Errorf("open: start/end not supported for pprof (no per-sample timestamps)")
 		}
 
-		sf := parsed.stacksByEvent[event]
-		if sf == nil {
-			sf = &stackFile{}
+		parsed, err := parsePprofData(path, allEventTypes())
+		if err != nil {
+			return nil, fmt.Errorf("open: %v", err)
+		}
+
+		if err := validateOpenEvent(parsed.eventCounts, event, path); err != nil {
+			return nil, err
+		}
+		return openProfileResult(parsed, event, thread, path), nil
+
+	default:
+		if path == "-" {
+			res, err := parseStdin(allEventTypes())
+			if err != nil {
+				return nil, fmt.Errorf("open: %v", err)
+			}
+			if res.parsed != nil {
+				// Stdin pprof — apply same validations as file-based pprof.
+				if start != "" || end != "" {
+					return nil, fmt.Errorf("open: start/end not supported for pprof (no per-sample timestamps)")
+				}
+				if err := validateOpenEvent(res.parsed.eventCounts, event, "stdin"); err != nil {
+					return nil, err
+				}
+				return openProfileResult(res.parsed, event, thread, path), nil
+			}
+			// Collapsed text stdin.
+			sf := res.sf
+			if thread != "" {
+				sf = sf.filterByThread(thread)
+			}
+			return newStarlarkProfile(sf, nil, event, path), nil
+		}
+		// Collapsed text file.
+		sf, _, err := openInput(path, event)
+		if err != nil {
+			return nil, fmt.Errorf("open: %v", err)
 		}
 		if thread != "" {
 			sf = sf.filterByThread(thread)
 		}
-		return newStarlarkProfile(sf, parsed, event, path), nil
+		return newStarlarkProfile(sf, nil, event, path), nil
 	}
+}
 
-	// Collapsed text.
-	sf, _, err := openInput(path, event)
-	if err != nil {
-		return nil, fmt.Errorf("open: %v", err)
+// validateOpenEvent checks that the requested event exists in eventCounts.
+func validateOpenEvent(eventCounts map[string]int, event, source string) error {
+	if eventCounts[event] > 0 {
+		return nil
+	}
+	available := make([]string, 0, len(eventCounts))
+	for e := range eventCounts {
+		available = append(available, e)
+	}
+	if len(available) == 0 {
+		return fmt.Errorf("open: no events found in %s", source)
+	}
+	return fmt.Errorf("open: event %q not found in %s (available: %s)", event, source, strings.Join(available, ", "))
+}
+
+// openProfileResult extracts the stackFile for event, applies thread filter,
+// and returns the Starlark profile value.
+func openProfileResult(parsed *parsedProfile, event, thread, path string) *starlarkProfile {
+	sf := parsed.stacksByEvent[event]
+	if sf == nil {
+		sf = &stackFile{}
 	}
 	if thread != "" {
 		sf = sf.filterByThread(thread)
 	}
-	return newStarlarkProfile(sf, nil, event, path), nil
+	return newStarlarkProfile(sf, parsed, event, path)
 }
 
 func builtinEmit(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
