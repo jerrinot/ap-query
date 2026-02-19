@@ -219,16 +219,14 @@ func builtinOpen(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, k
 	if event == "" {
 		event = "cpu"
 	}
-	switch event {
-	case "cpu", "wall", "alloc", "lock":
-	default:
-		return nil, fmt.Errorf("open: unknown event type %q (valid: cpu, wall, alloc, lock)", event)
+	if !isValidEventType(event) {
+		return nil, fmt.Errorf("open: unknown event type %q (valid: %s)", event, validEventTypesString())
 	}
 
 	format := detectFormat(path)
 	switch format {
 	case formatJFR:
-		opts := parseOpts{fromNanos: -1, toNanos: -1}
+		opts := parseOpts{fromNanos: -1, toNanos: -1, warnLargeCount: true}
 
 		if start != "" {
 			d, err := time.ParseDuration(start)
@@ -236,6 +234,9 @@ func builtinOpen(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, k
 				return nil, fmt.Errorf("open: invalid start %q: %v", start, err)
 			}
 			opts.fromNanos = d.Nanoseconds()
+			if opts.fromNanos < 0 {
+				return nil, fmt.Errorf("open: start must not be negative (got %s)", start)
+			}
 			opts.collectTimestamps = true
 		}
 		if end != "" {
@@ -244,6 +245,9 @@ func builtinOpen(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, k
 				return nil, fmt.Errorf("open: invalid end %q: %v", end, err)
 			}
 			opts.toNanos = d.Nanoseconds()
+			if opts.toNanos < 0 {
+				return nil, fmt.Errorf("open: end must not be negative (got %s)", end)
+			}
 			opts.collectTimestamps = true
 		}
 

@@ -7,11 +7,24 @@ import (
 	"strings"
 )
 
-var eventOrder = map[string]int{
-	"cpu":   0,
-	"wall":  1,
-	"alloc": 2,
-	"lock":  3,
+var validEventTypes = []string{"cpu", "wall", "alloc", "lock"}
+
+var eventOrder map[string]int
+
+func init() {
+	eventOrder = make(map[string]int, len(validEventTypes))
+	for i, e := range validEventTypes {
+		eventOrder[e] = i
+	}
+}
+
+func isValidEventType(s string) bool {
+	_, ok := eventOrder[s]
+	return ok
+}
+
+func validEventTypesString() string {
+	return strings.Join(validEventTypes, ", ")
 }
 
 type eventSelectionReason string
@@ -155,7 +168,7 @@ func formatEventList(counts map[string]int, skip string) []string {
 		if e.name == skip {
 			continue
 		}
-		out = append(out, fmt.Sprintf("%s (%d events)", e.name, e.samples))
+		out = append(out, fmt.Sprintf("%s (%d samples)", e.name, e.samples))
 	}
 	return out
 }

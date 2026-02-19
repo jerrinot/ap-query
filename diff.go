@@ -27,10 +27,8 @@ func newDiffCmd() *cobra.Command {
 			if eventType == "" {
 				eventType = "cpu"
 			}
-			switch eventType {
-			case "cpu", "wall", "alloc", "lock":
-			default:
-				return fmt.Errorf("unknown event type %q (valid: cpu, wall, alloc, lock)", eventType)
+			if !isValidEventType(eventType) {
+				return fmt.Errorf("unknown event type %q (valid: %s)", eventType, validEventTypesString())
 			}
 
 			eventsToParse := allEventTypes()

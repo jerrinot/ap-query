@@ -5,8 +5,10 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -551,10 +553,10 @@ func TestCmdInfoAlsoAvailable(t *testing.T) {
 	if !strings.Contains(out, "Also available:") {
 		t.Error("expected 'Also available' footer")
 	}
-	if !strings.Contains(out, "cpu (200 events)") {
+	if !strings.Contains(out, "cpu (200 samples)") {
 		t.Errorf("expected cpu count in footer, got %q", out)
 	}
-	if !strings.Contains(out, "alloc (50 events)") {
+	if !strings.Contains(out, "alloc (50 samples)") {
 		t.Errorf("expected alloc count in footer, got %q", out)
 	}
 }
@@ -6227,8 +6229,8 @@ func TestEventSelectionAfterFilter(t *testing.T) {
 	// Recompute counts from timed events.
 	filteredCounts := make(map[string]int)
 	for et, events := range parsed.timedEvents {
-		if len(events) > 0 {
-			filteredCounts[et] = len(events)
+		for _, e := range events {
+			filteredCounts[et] += e.weight
 		}
 	}
 	// resolveEventType should work on filtered counts.
@@ -6239,42 +6241,30 @@ func TestEventSelectionAfterFilter(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// TestWarnedLargeEventCountOnce — volume warning deduplication (Item 4)
+// TestWarnLargeCountPerCall — warnLargeCount is per-call, not global
 // ---------------------------------------------------------------------------
 
-func TestWarnedLargeEventCountOnce(t *testing.T) {
-	warnedLargeEventCount.Store(false)
-	defer warnedLargeEventCount.Store(false)
-
+func TestWarnLargeCountPerCall(t *testing.T) {
 	path := jfrFixture("cpu.jfr")
-	call := func() string {
-		return captureStream(&os.Stderr, func() {
-			parseJFRData(path, allEventTypes(), parseOpts{collectTimestamps: true, fromNanos: -1, toNanos: -1})
-		})
+
+	// Without warnLargeCount, no warning even on repeated calls.
+	stderr := captureStream(&os.Stderr, func() {
+		parseJFRData(path, allEventTypes(), parseOpts{collectTimestamps: true, fromNanos: -1, toNanos: -1})
+	})
+	if strings.Contains(stderr, "events collected") {
+		t.Error("warning should not appear when warnLargeCount is false")
 	}
 
-	first := call()
-	second := call()
-
-	// The fixture is small so the warning won't fire, but we verify the flag
-	// prevents double-warning by manually setting it.
-	warnedLargeEventCount.Store(false)
-
-	// Force the flag on and verify second call doesn't warn.
-	warnedLargeEventCount.Store(true)
-	third := call()
-	if strings.Contains(third, "events collected") {
-		t.Error("warning should not appear when warnedLargeEventCount is true")
-	}
-
-	// Reset and verify warning can appear again.
-	warnedLargeEventCount.Store(false)
-	_ = first
-	_ = second
+	// With warnLargeCount (fixture is small so warning won't fire based on count).
+	stderr = captureStream(&os.Stderr, func() {
+		parseJFRData(path, allEventTypes(), parseOpts{collectTimestamps: true, fromNanos: -1, toNanos: -1, warnLargeCount: true})
+	})
+	// Small fixture: no warning expected either way.
+	_ = stderr
 }
 
 // ---------------------------------------------------------------------------
-// TestCmdEventsColumnLabelAndTotal — events COUNT header and total row (Item 5)
+// TestCmdEventsColumnLabelAndTotal — events SAMPLES header and total row (Item 5)
 // ---------------------------------------------------------------------------
 
 func TestCmdEventsColumnLabelAndTotal(t *testing.T) {
@@ -6284,11 +6274,8 @@ func TestCmdEventsColumnLabelAndTotal(t *testing.T) {
 			t.Fatalf("cmdEvents: %v", err)
 		}
 	})
-	if !strings.Contains(out, "COUNT") {
-		t.Errorf("expected COUNT header, got:\n%s", out)
-	}
-	if strings.Contains(out, "SAMPLES") {
-		t.Errorf("should not have SAMPLES header, got:\n%s", out)
+	if !strings.Contains(out, "SAMPLES") {
+		t.Errorf("expected SAMPLES header, got:\n%s", out)
 	}
 	if !strings.Contains(out, "total") {
 		t.Errorf("expected total row, got:\n%s", out)
@@ -6494,16 +6481,26 @@ func TestUnknownFlagRejected(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// TestFromNegativeDuration — --from -1s works (pflag handles negative values)
+// TestFromNegativeDuration — --from -1s is rejected
 // ---------------------------------------------------------------------------
 
 func TestFromNegativeDuration(t *testing.T) {
-	code, stdout, stderr := runCLIForTest(t, []string{"hot", jfrFixture("cpu.jfr"), "--from", "-1s"}, nil)
-	if code != 0 {
-		t.Errorf("--from -1s exit code = %d, want 0, stderr:\n%s", code, stderr)
+	code, _, stderr := runCLIForTest(t, []string{"hot", jfrFixture("cpu.jfr"), "--from", "-1s"}, nil)
+	if code == 0 {
+		t.Error("expected non-zero exit for --from -1s")
 	}
-	if !strings.Contains(stdout, "SELF TIME") {
-		t.Errorf("expected hot output, got:\n%s", stdout)
+	if !strings.Contains(stderr, "must not be negative") {
+		t.Errorf("expected 'must not be negative' in stderr, got:\n%s", stderr)
+	}
+}
+
+func TestToNegativeDuration(t *testing.T) {
+	code, _, stderr := runCLIForTest(t, []string{"hot", jfrFixture("cpu.jfr"), "--to", "-500ms"}, nil)
+	if code == 0 {
+		t.Error("expected non-zero exit for --to -500ms")
+	}
+	if !strings.Contains(stderr, "must not be negative") {
+		t.Errorf("expected 'must not be negative' in stderr, got:\n%s", stderr)
 	}
 }
 
@@ -6731,5 +6728,126 @@ func TestCmdTimelineTopWithPct(t *testing.T) {
 	}
 	if dataLines != 3 {
 		t.Errorf("expected 3 data lines, got %d\nOutput:\n%s", dataLines, out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestAssertBelowNegative — --assert-below -5 is rejected
+// ---------------------------------------------------------------------------
+
+func TestAssertBelowNegative(t *testing.T) {
+	code, _, stderr := runCLIForTest(t, []string{"hot", jfrFixture("cpu.jfr"), "--assert-below", "-5"}, nil)
+	if code == 0 {
+		t.Error("expected non-zero exit for --assert-below -5")
+	}
+	if !strings.Contains(stderr, "must not be negative") {
+		t.Errorf("expected 'must not be negative' in stderr, got:\n%s", stderr)
+	}
+}
+
+func TestAssertBelowZeroNoAssertion(t *testing.T) {
+	code, stdout, stderr := runCLIForTest(t, []string{"hot", jfrFixture("cpu.jfr"), "--assert-below", "0"}, nil)
+	if code != 0 {
+		t.Errorf("--assert-below 0 exit code = %d, want 0, stderr:\n%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "SELF TIME") {
+		t.Errorf("expected hot output, got:\n%s", stdout)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestBucketsResolutionConflict — --buckets + --resolution is rejected
+// ---------------------------------------------------------------------------
+
+func TestBucketsResolutionConflict(t *testing.T) {
+	code, _, stderr := runCLIForTest(t, []string{"timeline", jfrFixture("cpu.jfr"), "--buckets", "10", "--resolution", "1s"}, nil)
+	if code == 0 {
+		t.Error("expected non-zero exit for --buckets + --resolution")
+	}
+	if !strings.Contains(stderr, "mutually exclusive") {
+		t.Errorf("expected 'mutually exclusive' in stderr, got:\n%s", stderr)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestPctOfZeroTotal — pctOf(n, 0) returns 0, not NaN
+// ---------------------------------------------------------------------------
+
+func TestPctOfZeroTotal(t *testing.T) {
+	result := pctOf(10, 0)
+	if result != 0 {
+		t.Errorf("pctOf(10, 0) = %f, want 0", result)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestGzipTruncatedChecksum — truncated .gz produces an error
+// ---------------------------------------------------------------------------
+
+func TestGzipTruncatedChecksum(t *testing.T) {
+	// Create a valid gzip stream, then truncate the last 4 bytes (CRC32 trailer).
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	gw.Write([]byte("A;B;C 10\n"))
+	gw.Close()
+	full := buf.Bytes()
+	truncated := full[:len(full)-4]
+
+	tmp := filepath.Join(t.TempDir(), "bad.txt.gz")
+	os.WriteFile(tmp, truncated, 0644)
+
+	rc, err := openReader(tmp)
+	if err != nil {
+		t.Fatalf("openReader: %v", err)
+	}
+	_, readErr := io.ReadAll(rc)
+	closeErr := rc.Close()
+	if readErr == nil && closeErr == nil {
+		t.Error("expected error for truncated gzip, got none")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestScanChunkHeadersMaxUint64Size — oversized chunk size is rejected
+// ---------------------------------------------------------------------------
+
+func TestScanChunkHeadersMaxUint64Size(t *testing.T) {
+	// Build a minimal chunk header with magic + MaxUint64 as size.
+	buf := make([]byte, jfrChunkHeaderSize)
+	binary.BigEndian.PutUint32(buf[0:], jfrChunkMagic)
+	binary.BigEndian.PutUint64(buf[8:], math.MaxUint64)
+	binary.BigEndian.PutUint64(buf[32:], 1000) // startNanos
+	binary.BigEndian.PutUint64(buf[40:], 500)  // durationNanos
+
+	// Should not panic; should process the one chunk then break.
+	_, _, err := scanChunkHeaders(buf)
+	if err != nil {
+		t.Errorf("expected no error (one valid chunk header), got: %v", err)
+	}
+}
+
+func TestScanChunkHeadersOverflowSecondChunk(t *testing.T) {
+	// Two chunk headers: first valid (size = 68), second with size near
+	// MaxInt64. Before the overflow fix, int64(pos)+size64 would wrap
+	// negative, bypass the bounds check, and panic on the next iteration.
+	buf := make([]byte, 2*jfrChunkHeaderSize)
+
+	// First chunk: valid, size = 68 (exactly one header, advances to second).
+	binary.BigEndian.PutUint32(buf[0:], jfrChunkMagic)
+	binary.BigEndian.PutUint64(buf[8:], jfrChunkHeaderSize)
+	binary.BigEndian.PutUint64(buf[32:], 1000)
+	binary.BigEndian.PutUint64(buf[40:], 500)
+
+	// Second chunk: valid magic, but size = MaxInt64 (overflow-triggering).
+	off := jfrChunkHeaderSize
+	binary.BigEndian.PutUint32(buf[off:], jfrChunkMagic)
+	binary.BigEndian.PutUint64(buf[off+8:], uint64(math.MaxInt64))
+	binary.BigEndian.PutUint64(buf[off+32:], 2000)
+	binary.BigEndian.PutUint64(buf[off+40:], 300)
+
+	// Must not panic. Both chunks are counted; second triggers truncation warning.
+	_, _, err := scanChunkHeaders(buf)
+	if err != nil {
+		t.Errorf("expected no error (two chunk headers parsed), got: %v", err)
 	}
 }

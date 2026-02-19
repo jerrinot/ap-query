@@ -4275,3 +4275,134 @@ print(bp.end)
 		t.Fatalf("expected bucket.end=%q to equal profile.end=%q", lines[1], lines[3])
 	}
 }
+
+// ---------------------------------------------------------------------------
+// TestOpenNegativeStart — open(start="-1s") is rejected
+// ---------------------------------------------------------------------------
+
+func TestOpenNegativeStart(t *testing.T) {
+	stderr := captureStream(&os.Stderr, func() {
+		code := runScript(fmt.Sprintf(`p = open(%q, start="-1s")`, scriptFixture("cpu.jfr")), "", nil, testTimeout)
+		if code == 0 {
+			t.Fatalf("expected error for negative start")
+		}
+	})
+	if !strings.Contains(stderr, "must not be negative") {
+		t.Fatalf("expected 'must not be negative' in stderr, got %q", stderr)
+	}
+}
+
+func TestOpenNegativeEnd(t *testing.T) {
+	stderr := captureStream(&os.Stderr, func() {
+		code := runScript(fmt.Sprintf(`p = open(%q, end="-500ms")`, scriptFixture("cpu.jfr")), "", nil, testTimeout)
+		if code == 0 {
+			t.Fatalf("expected error for negative end")
+		}
+	})
+	if !strings.Contains(stderr, "must not be negative") {
+		t.Fatalf("expected 'must not be negative' in stderr, got %q", stderr)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestTimelineBucketsResolutionConflictScript — timeline(resolution=..., buckets=...) rejected
+// ---------------------------------------------------------------------------
+
+func TestTimelineBucketsResolutionConflictScript(t *testing.T) {
+	stderr := captureStream(&os.Stderr, func() {
+		code := runScript(fmt.Sprintf(`
+p = open(%q)
+p.timeline(resolution="1s", buckets=10)
+`, scriptFixture("cpu.jfr")), "", nil, testTimeout)
+		if code == 0 {
+			t.Fatalf("expected error for timeline(resolution + buckets)")
+		}
+	})
+	if !strings.Contains(stderr, "mutually exclusive") {
+		t.Fatalf("expected 'mutually exclusive' in stderr, got %q", stderr)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestPctOfZeroTotalScript — Method.self_pct / total_pct / Thread.pct return 0 on empty profile
+// ---------------------------------------------------------------------------
+
+func TestPctOfZeroTotalScript(t *testing.T) {
+	out := captureOutput(func() {
+		sf := &stackFile{} // zero totalSamples
+		p := newStarlarkProfile(sf, nil, "cpu", "empty")
+		code := runScript(`
+methods = p.hot()
+if len(methods) > 0:
+    print("unexpected methods")
+else:
+    print("ok")
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	if strings.TrimSpace(out) != "ok" {
+		t.Fatalf("expected 'ok', got %q", out)
+	}
+}
+
+func TestMethodPctZeroTotal(t *testing.T) {
+	// Build a profile with a stack but totalSamples forced to 0.
+	sf := &stackFile{
+		stacks: []stack{
+			{frames: []string{"A", "B"}, lines: []uint32{0, 0}, count: 5},
+		},
+		totalSamples: 0,
+	}
+	out := captureOutput(func() {
+		p := newStarlarkProfile(sf, nil, "cpu", "test")
+		code := runScript(`
+methods = p.hot()
+for m in methods:
+    print(m.self_pct)
+    print(m.total_pct)
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if line != "0.0" && line != "0" {
+			t.Errorf("expected 0.0, got %q", line)
+		}
+	}
+}
+
+func TestThreadPctZeroTotal(t *testing.T) {
+	sf := &stackFile{
+		stacks: []stack{
+			{frames: []string{"A"}, lines: []uint32{0}, count: 5, thread: "main"},
+		},
+		totalSamples: 0,
+	}
+	out := captureOutput(func() {
+		p := newStarlarkProfile(sf, nil, "cpu", "test")
+		code := runScript(`
+threads = p.threads()
+for th in threads:
+    print(th.pct)
+`, "", nil, testTimeout, withPredeclared("p", p))
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if line != "0.0" && line != "0" {
+			t.Errorf("expected 0.0, got %q", line)
+		}
+	}
+}

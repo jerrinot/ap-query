@@ -103,7 +103,7 @@ func TestPrintEventSelectionForSingle(t *testing.T) {
 	if !strings.Contains(out, "Event: cpu (default present)") {
 		t.Fatalf("missing event line: %q", out)
 	}
-	if !strings.Contains(out, "Also available: wall (50 events), alloc (20 events)") {
+	if !strings.Contains(out, "Also available: wall (50 samples), alloc (20 samples)") {
 		t.Fatalf("missing also-available line: %q", out)
 	}
 }
@@ -124,10 +124,10 @@ func TestPrintEventSelectionForDiff(t *testing.T) {
 	if !strings.Contains(out, "Warning: no common event type across both recordings") {
 		t.Fatalf("missing warning line: %q", out)
 	}
-	if !strings.Contains(out, "Before also available: wall (30 events), alloc (10 events)") {
+	if !strings.Contains(out, "Before also available: wall (30 samples), alloc (10 samples)") {
 		t.Fatalf("missing before line: %q", out)
 	}
-	if !strings.Contains(out, "After also available: lock (7 events)") {
+	if !strings.Contains(out, "After also available: lock (7 samples)") {
 		t.Fatalf("missing after line: %q", out)
 	}
 }
@@ -153,6 +153,42 @@ func TestPrintEventSelectionForDiffOneSidedWarning(t *testing.T) {
 	}
 	if !strings.Contains(out, "ap-query collapse --event cpu") {
 		t.Fatalf("missing regeneration tip: %q", out)
+	}
+}
+
+func TestIsValidEventType(t *testing.T) {
+	for _, et := range validEventTypes {
+		if !isValidEventType(et) {
+			t.Errorf("isValidEventType(%q) = false, want true", et)
+		}
+	}
+	for _, bad := range []string{"", "bogus", "CPU", "itimer"} {
+		if isValidEventType(bad) {
+			t.Errorf("isValidEventType(%q) = true, want false", bad)
+		}
+	}
+}
+
+func TestValidEventTypesMatchEventOrder(t *testing.T) {
+	if len(validEventTypes) != len(eventOrder) {
+		t.Fatalf("validEventTypes has %d entries, eventOrder has %d", len(validEventTypes), len(eventOrder))
+	}
+	for i, et := range validEventTypes {
+		rank, ok := eventOrder[et]
+		if !ok {
+			t.Errorf("eventOrder missing %q", et)
+		}
+		if rank != i {
+			t.Errorf("eventOrder[%q] = %d, want %d", et, rank, i)
+		}
+	}
+}
+
+func TestValidEventTypesString(t *testing.T) {
+	got := validEventTypesString()
+	want := "cpu, wall, alloc, lock"
+	if got != want {
+		t.Errorf("validEventTypesString() = %q, want %q", got, want)
 	}
 }
 

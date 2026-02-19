@@ -61,7 +61,7 @@ func cmdEvents(path string) error {
 	}
 	sort.Slice(ranked, func(i, j int) bool { return ranked[i].samples > ranked[j].samples })
 
-	fmt.Printf("%-10s %9s\n", "EVENT", "COUNT")
+	fmt.Printf("%-10s %9s\n", "EVENT", "SAMPLES")
 	for _, e := range ranked {
 		fmt.Printf("%-10s %9d\n", e.name, e.samples)
 	}

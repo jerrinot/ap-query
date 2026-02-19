@@ -11,15 +11,12 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"unicode/utf8"
 
 	"github.com/grafana/jfr-parser/parser"
 	"github.com/grafana/jfr-parser/parser/types"
 	"github.com/grafana/jfr-parser/parser/types/def"
 )
-
-var warnedLargeEventCount atomic.Bool
 
 // ---------------------------------------------------------------------------
 // Data model
@@ -161,8 +158,15 @@ func readJFRBytes(path string) ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("gzip: %w", err)
 		}
-		defer gr.Close()
-		return io.ReadAll(gr)
+		data, readErr := io.ReadAll(gr)
+		closeErr := gr.Close()
+		if readErr != nil {
+			return nil, readErr
+		}
+		if closeErr != nil {
+			return nil, closeErr
+		}
+		return data, nil
 	}
 
 	// Pre-allocate buffer for non-gzipped files to avoid repeated
@@ -205,6 +209,7 @@ type parseOpts struct {
 	collectTimestamps bool
 	fromNanos         int64 // -1 = no filter
 	toNanos           int64 // -1 = no filter
+	warnLargeCount    bool  // when true, warn if >10M events
 }
 
 type parsedProfile struct {
@@ -318,12 +323,11 @@ func resolveStackTraceCached(p *parser.Parser, cache map[types.StackTraceRef]*ca
 }
 
 func allEventTypes() map[string]struct{} {
-	return map[string]struct{}{
-		"cpu":   {},
-		"wall":  {},
-		"alloc": {},
-		"lock":  {},
+	m := make(map[string]struct{}, len(validEventTypes))
+	for _, e := range validEventTypes {
+		m[e] = struct{}{}
 	}
+	return m
 }
 
 func singleEventType(eventType string) map[string]struct{} {
@@ -364,7 +368,7 @@ func scanChunkHeaders(buf []byte) (originNanos int64, spanNanos int64, err error
 			fmt.Fprintf(os.Stderr, "warning: truncated chunk header scan at offset %d; timeline span may be incomplete\n", pos)
 			break
 		}
-		size := int(binary.BigEndian.Uint64(buf[pos+8:]))
+		size64 := int64(binary.BigEndian.Uint64(buf[pos+8:]))
 		startNanos := binary.BigEndian.Uint64(buf[pos+32:])
 		durationNanos := binary.BigEndian.Uint64(buf[pos+40:])
 
@@ -377,11 +381,11 @@ func scanChunkHeaders(buf []byte) (originNanos int64, spanNanos int64, err error
 		}
 		chunks++
 
-		if size <= 0 || pos+size > len(buf) || pos+size <= pos {
+		if size64 <= 0 || size64 > int64(len(buf))-int64(pos) {
 			fmt.Fprintf(os.Stderr, "warning: truncated chunk header scan at offset %d; timeline span may be incomplete\n", pos)
 			break
 		}
-		pos += size
+		pos += int(size64)
 	}
 
 	if chunks == 0 {
@@ -511,7 +515,7 @@ func parseJFRData(path string, stackEvents map[string]struct{}, opts parseOpts) 
 			continue
 		}
 
-		counts[info.eventType]++
+		counts[info.eventType] += info.weight
 
 		if opts.collectTimestamps {
 			if _, ok := stackEvents[info.eventType]; !ok {
@@ -565,12 +569,12 @@ func parseJFRData(path string, stackEvents map[string]struct{}, opts parseOpts) 
 			stacksByEvent[eventType] = buildStackFile(agg)
 		}
 	}
-	if opts.collectTimestamps {
+	if opts.collectTimestamps && opts.warnLargeCount {
 		total := 0
 		for _, events := range timedByEvent {
 			total += len(events)
 		}
-		if total > 10_000_000 && warnedLargeEventCount.CompareAndSwap(false, true) {
+		if total > 10_000_000 {
 			fmt.Fprintf(os.Stderr, "warning: %d events collected; consider using --from/--to to narrow the time window\n", total)
 		}
 	}
@@ -628,8 +632,12 @@ type gzipReadCloser struct {
 
 func (g *gzipReadCloser) Read(p []byte) (int, error) { return g.gz.Read(p) }
 func (g *gzipReadCloser) Close() error {
-	g.gz.Close()
-	return g.f.Close()
+	gzErr := g.gz.Close()
+	fErr := g.f.Close()
+	if gzErr != nil {
+		return gzErr
+	}
+	return fErr
 }
 
 // splitCollapsedLine splits "frames count\n" into the frames string and count.

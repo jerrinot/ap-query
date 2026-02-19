@@ -113,6 +113,9 @@ func truncate(n, top int) int {
 }
 
 func pctOf(n, total int) float64 {
+	if total == 0 {
+		return 0
+	}
 	return 100.0 * float64(n) / float64(total)
 }
 

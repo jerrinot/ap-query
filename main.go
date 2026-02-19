@@ -65,10 +65,8 @@ func preprocessProfile(opts preprocessOpts) (*profileContext, error) {
 	if eventType == "" {
 		eventType = "cpu"
 	}
-	switch eventType {
-	case "cpu", "wall", "alloc", "lock":
-	default:
-		return nil, fmt.Errorf("unknown event type %q (valid: cpu, wall, alloc, lock)", eventType)
+	if !isValidEventType(eventType) {
+		return nil, fmt.Errorf("unknown event type %q (valid: %s)", eventType, validEventTypesString())
 	}
 
 	// Parse time range.
@@ -83,6 +81,9 @@ func preprocessProfile(opts preprocessOpts) (*profileContext, error) {
 				return nil, fmt.Errorf("invalid --from value %q: %v", opts.fromStr, err)
 			}
 			fromNanos = d.Nanoseconds()
+			if fromNanos < 0 {
+				return nil, fmt.Errorf("--from must not be negative (got %s)", opts.fromStr)
+			}
 		}
 		if opts.toStr != "" {
 			d, err := time.ParseDuration(opts.toStr)
@@ -90,6 +91,9 @@ func preprocessProfile(opts preprocessOpts) (*profileContext, error) {
 				return nil, fmt.Errorf("invalid --to value %q: %v", opts.toStr, err)
 			}
 			toNanos = d.Nanoseconds()
+			if toNanos < 0 {
+				return nil, fmt.Errorf("--to must not be negative (got %s)", opts.toStr)
+			}
 		}
 		if fromNanos >= 0 && toNanos >= 0 && toNanos < fromNanos {
 			return nil, fmt.Errorf("--to must be >= --from")
@@ -128,7 +132,7 @@ func preprocessProfile(opts preprocessOpts) (*profileContext, error) {
 		if eventExplicit {
 			eventsToParse = singleEventType(eventType)
 		}
-		po := parseOpts{}
+		po := parseOpts{warnLargeCount: true}
 		if needTimed {
 			po.collectTimestamps = true
 			po.fromNanos = fromNanos
@@ -152,8 +156,8 @@ func preprocessProfile(opts preprocessOpts) (*profileContext, error) {
 		if needTimed && parsed.timedEvents != nil {
 			filteredCounts := make(map[string]int)
 			for et, events := range parsed.timedEvents {
-				if len(events) > 0 {
-					filteredCounts[et] = len(events)
+				for _, e := range events {
+					filteredCounts[et] += e.weight
 				}
 			}
 			eventCounts = filteredCounts

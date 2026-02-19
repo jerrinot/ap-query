@@ -17,6 +17,9 @@ func newHotCmd() *cobra.Command {
 		Short: "Rank methods by self-time and total-time",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if assertBelow < 0 {
+				return fmt.Errorf("--assert-below must not be negative (got %g)", assertBelow)
+			}
 			pctx, err := preprocessProfile(shared.toOpts(args[0], "hot"))
 			if err != nil {
 				return err

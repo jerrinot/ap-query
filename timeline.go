@@ -84,6 +84,10 @@ func resolveBucketRange(fromNanos, toNanos, span int64, events []timedEvent) (bu
 func computeBucketWidth(bucketSpan int64, buckets int, resolution string) (numBuckets int, bucketWidth int64, err error) {
 	numBuckets = buckets
 
+	if resolution != "" && numBuckets > 0 {
+		return 0, 0, fmt.Errorf("--buckets and --resolution are mutually exclusive")
+	}
+
 	if bucketSpan == 0 {
 		return 1, 0, nil
 	} else if resolution != "" {
