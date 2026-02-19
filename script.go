@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -216,11 +217,15 @@ func builtinOpen(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, k
 		return nil, err
 	}
 
+	eventExplicit := event != ""
 	if event == "" {
 		event = "cpu"
 	}
-	if !isValidEventType(event) {
-		return nil, fmt.Errorf("open: unknown event type %q (valid: %s)", event, validEventTypesString())
+	if !isKnownEventType(event) {
+		format := detectFormat(path)
+		if format == formatCollapsed && path != "-" {
+			return nil, fmt.Errorf("open: unknown event type %q (valid: %s)", event, validEventTypesString())
+		}
 	}
 
 	format := detectFormat(path)
@@ -256,6 +261,7 @@ func builtinOpen(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, k
 			return nil, fmt.Errorf("open: %v", err)
 		}
 
+		event, _ = resolveEventType(event, eventExplicit, parsed.eventCounts)
 		if err := validateOpenEvent(parsed.eventCounts, event, path); err != nil {
 			return nil, err
 		}
@@ -271,6 +277,7 @@ func builtinOpen(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, k
 			return nil, fmt.Errorf("open: %v", err)
 		}
 
+		event, _ = resolveEventType(event, eventExplicit, parsed.eventCounts)
 		if err := validateOpenEvent(parsed.eventCounts, event, path); err != nil {
 			return nil, err
 		}
@@ -287,12 +294,16 @@ func builtinOpen(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, k
 				if start != "" || end != "" {
 					return nil, fmt.Errorf("open: start/end not supported for pprof (no per-sample timestamps)")
 				}
+				event, _ = resolveEventType(event, eventExplicit, res.parsed.eventCounts)
 				if err := validateOpenEvent(res.parsed.eventCounts, event, "stdin"); err != nil {
 					return nil, err
 				}
 				return openProfileResult(res.parsed, event, thread, path), nil
 			}
-			// Collapsed text stdin.
+			// Collapsed text stdin — no event metadata exists.
+			if eventExplicit && !isKnownEventType(event) {
+				return nil, fmt.Errorf("open: unknown event type %q (valid: %s)", event, validEventTypesString())
+			}
 			sf := res.sf
 			if thread != "" {
 				sf = sf.filterByThread(thread)
@@ -320,6 +331,7 @@ func validateOpenEvent(eventCounts map[string]int, event, source string) error {
 	for e := range eventCounts {
 		available = append(available, e)
 	}
+	sort.Strings(available)
 	if len(available) == 0 {
 		return fmt.Errorf("open: no events found in %s", source)
 	}

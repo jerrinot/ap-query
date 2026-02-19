@@ -218,6 +218,7 @@ type parsedProfile struct {
 	timedEvents   map[string][]timedEvent // nil when not collecting
 	originNanos   int64                   // first chunk's StartNanos
 	spanNanos     int64                   // total recording span from chunk header scan
+	execEventName string                  // resolved name for ExecutionSample (e.g. "cpu", "branch-misses")
 }
 
 // cachedStackTrace stores a resolved stacktrace in root->leaf order plus
@@ -450,10 +451,19 @@ type jfrEventInfo struct {
 	weight     int
 }
 
-func classifyEvent(p *parser.Parser, typ def.TypeID) (jfrEventInfo, bool) {
+// normalizeExecEvent maps the raw async-profiler event name from
+// jdk.ActiveSetting to the canonical ap-query event name.
+func normalizeExecEvent(raw string) string {
+	if raw == "cpu-clock" {
+		return "cpu"
+	}
+	return raw
+}
+
+func classifyEvent(p *parser.Parser, typ def.TypeID, execEventName string) (jfrEventInfo, bool) {
 	switch typ {
 	case p.TypeMap.T_EXECUTION_SAMPLE:
-		return jfrEventInfo{"cpu", p.ExecutionSample.StackTrace, p.ExecutionSample.SampledThread, p.ExecutionSample.StartTime, 1}, true
+		return jfrEventInfo{execEventName, p.ExecutionSample.StackTrace, p.ExecutionSample.SampledThread, p.ExecutionSample.StartTime, 1}, true
 	case p.TypeMap.T_WALL_CLOCK_SAMPLE:
 		weight := int(p.WallClockSample.Samples)
 		if weight < 1 {
@@ -487,8 +497,19 @@ func parseJFRData(path string, stackEvents map[string]struct{}, opts parseOpts) 
 
 	p := parser.NewParser(buf, parser.Options{})
 	counts := make(map[string]int)
-	aggByEvent := make(map[string]map[stackKey]*aggValue, len(stackEvents))
-	for eventType := range stackEvents {
+	// Copy stackEvents to avoid mutating the caller's map when ActiveSetting
+	// discovers dynamic event names (e.g. "branch-misses").
+	var wantEvents map[string]struct{}
+	strictFilter := false // true when caller requested exactly one event
+	if stackEvents != nil {
+		strictFilter = len(stackEvents) == 1
+		wantEvents = make(map[string]struct{}, len(stackEvents)+1)
+		for e := range stackEvents {
+			wantEvents[e] = struct{}{}
+		}
+	}
+	aggByEvent := make(map[string]map[stackKey]*aggValue, len(wantEvents))
+	for eventType := range wantEvents {
 		aggByEvent[eventType] = make(map[stackKey]*aggValue)
 	}
 	// async-profiler call_trace_id values are stable across JFR chunks, so stack
@@ -498,8 +519,10 @@ func parseJFRData(path string, stackEvents map[string]struct{}, opts parseOpts) 
 
 	var timedByEvent map[string][]timedEvent
 	if opts.collectTimestamps {
-		timedByEvent = make(map[string][]timedEvent, len(stackEvents))
+		timedByEvent = make(map[string][]timedEvent, len(wantEvents))
 	}
+
+	execEventName := "cpu"
 
 	for {
 		typ, err := p.ParseEvent()
@@ -510,7 +533,25 @@ func parseJFRData(path string, stackEvents map[string]struct{}, opts parseOpts) 
 			return nil, fmt.Errorf("parse event: %w", err)
 		}
 
-		info, ok := classifyEvent(p, typ)
+		if typ == p.TypeMap.T_ACTIVE_SETTING {
+			s := p.ActiveSetting
+			if s.Name == "event" {
+				execEventName = normalizeExecEvent(s.Value)
+				// In parse-all mode, dynamically add the discovered event
+				// so ExecutionSample data is collected under its real name.
+				// In strict single-event mode, skip: the caller requested
+				// one specific event and we must not widen the filter.
+				if wantEvents != nil && !strictFilter {
+					wantEvents[execEventName] = struct{}{}
+					if _, exists := aggByEvent[execEventName]; !exists {
+						aggByEvent[execEventName] = make(map[stackKey]*aggValue)
+					}
+				}
+			}
+			continue
+		}
+
+		info, ok := classifyEvent(p, typ, execEventName)
 		if !ok {
 			continue
 		}
@@ -518,7 +559,7 @@ func parseJFRData(path string, stackEvents map[string]struct{}, opts parseOpts) 
 		counts[info.eventType] += info.weight
 
 		if opts.collectTimestamps {
-			if _, ok := stackEvents[info.eventType]; !ok {
+			if _, ok := wantEvents[info.eventType]; !ok {
 				continue
 			}
 			hdr := p.ChunkHeader()
@@ -557,7 +598,7 @@ func parseJFRData(path string, stackEvents map[string]struct{}, opts parseOpts) 
 	stacksByEvent := make(map[string]*stackFile, len(aggByEvent))
 	if opts.collectTimestamps {
 		// Build stackFiles from timed events (already filtered by from/to).
-		for eventType := range stackEvents {
+		for eventType := range wantEvents {
 			if events, ok := timedByEvent[eventType]; ok && len(events) > 0 {
 				stacksByEvent[eventType] = buildStackFileFromTimed(events)
 			} else {
@@ -585,6 +626,7 @@ func parseJFRData(path string, stackEvents map[string]struct{}, opts parseOpts) 
 		timedEvents:   timedByEvent,
 		originNanos:   originNanos,
 		spanNanos:     spanNanos,
+		execEventName: execEventName,
 	}, nil
 }
 

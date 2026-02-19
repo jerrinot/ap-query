@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -27,8 +28,15 @@ func newDiffCmd() *cobra.Command {
 			if eventType == "" {
 				eventType = "cpu"
 			}
-			if !isValidEventType(eventType) {
-				return fmt.Errorf("unknown event type %q (valid: %s)", eventType, validEventTypesString())
+			if !isKnownEventType(eventType) {
+				// For collapsed text files, reject unknown events immediately
+				// (no event metadata to discover dynamically).
+				beforeFmt := detectFormat(beforePath)
+				afterFmt := detectFormat(afterPath)
+				if (beforeFmt == formatCollapsed && beforePath != "-") &&
+					(afterFmt == formatCollapsed && afterPath != "-") {
+					return fmt.Errorf("unknown event type %q (valid: %s)", eventType, validEventTypesString())
+				}
 			}
 
 			eventsToParse := allEventTypes()
@@ -82,6 +90,32 @@ func newDiffCmd() *cobra.Command {
 			}
 			eventType, eventReason := resolveEventTypeForDiff(eventType, eventExplicit, beforeEventCounts, afterEventCounts)
 
+			// Post-parse validation: reject explicitly-requested unknown events
+			// that were not found in either side with metadata.
+			if eventExplicit && !isKnownEventType(eventType) {
+				hasBefore := beforeEventCounts != nil && beforeEventCounts[eventType] > 0
+				hasAfter := afterEventCounts != nil && afterEventCounts[eventType] > 0
+				if !hasBefore && !hasAfter {
+					// Collect available events from whichever side has metadata.
+					available := make(map[string]struct{})
+					for e := range beforeEventCounts {
+						available[e] = struct{}{}
+					}
+					for e := range afterEventCounts {
+						available[e] = struct{}{}
+					}
+					names := make([]string, 0, len(available))
+					for e := range available {
+						names = append(names, e)
+					}
+					sort.Strings(names)
+					if len(names) == 0 {
+						return fmt.Errorf("event %q not found (no events in files)", eventType)
+					}
+					return fmt.Errorf("event %q not found (available: %s)", eventType, strings.Join(names, ", "))
+				}
+			}
+
 			var before *stackFile
 			switch {
 			case beforeSide.parsed != nil:
@@ -122,7 +156,7 @@ func newDiffCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVarP(&event, "event", "e", "", "Event type: cpu, wall, alloc, lock (default: cpu)")
+	cmd.Flags().StringVarP(&event, "event", "e", "", "Event type: cpu, wall, alloc, lock, or hardware counter name (default: cpu)")
 	cmd.Flags().StringVarP(&thread, "thread", "t", "", "Filter to threads matching substring")
 	cmd.Flags().Float64Var(&minDelta, "min-delta", 0.5, "Hide entries below this % change")
 	cmd.Flags().IntVar(&top, "top", 0, "Limit output rows (default: unlimited)")

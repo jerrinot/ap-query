@@ -57,6 +57,9 @@ Use `{{ASPROF_PATH}}` to record profiles. Common invocations:
 - **wall** — wall-clock samples: includes threads blocked on I/O, locks, sleeps. Use when
   latency matters more than CPU usage (e.g. slow HTTP requests where threads wait on DB).
 - **alloc** / **lock** — allocation and lock-contention hotspots.
+- **Hardware counters** (branch-misses, cache-misses, cycles, etc.) — accepted when the profile
+  was recorded with that event via async-profiler (`-e branch-misses`). These are discovered
+  from JFR metadata and auto-selected when they are the only event in the file.
 
 When unsure, start with `cpu`. Switch to `wall` if the profile shows low CPU but high latency.
 Use `--no-idle` with wall to strip idle leaf frames (futex, sleep, park, epoll_wait) and see only active work.

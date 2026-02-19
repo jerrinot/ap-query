@@ -3322,17 +3322,23 @@ func TestParseJFRDataAllEventsMatchesSingleEventParsing(t *testing.T) {
 	}
 }
 
-func TestJFRBranchMissesMapsToCPU(t *testing.T) {
+func TestJFRBranchMissesExecEvent(t *testing.T) {
 	parsed, err := parseJFRData(jfrFixture("branch-misses.jfr"), nil, parseOpts{})
 	if err != nil {
 		t.Fatalf("parseJFRData: %v", err)
 	}
 	counts := parsed.eventCounts
-	if _, ok := counts["cpu"]; !ok {
-		t.Errorf("expected 'cpu' event in branch-misses.jfr, got %v", counts)
+	if _, ok := counts["branch-misses"]; !ok {
+		t.Errorf("expected 'branch-misses' event in branch-misses.jfr, got %v", counts)
+	}
+	if _, ok := counts["cpu"]; ok {
+		t.Errorf("expected no 'cpu' event in branch-misses.jfr, got %v", counts)
 	}
 	if len(counts) != 1 {
 		t.Errorf("expected exactly 1 event type in branch-misses.jfr, got %v", counts)
+	}
+	if parsed.execEventName != "branch-misses" {
+		t.Errorf("expected execEventName='branch-misses', got %q", parsed.execEventName)
 	}
 }
 
@@ -6849,5 +6855,357 @@ func TestScanChunkHeadersOverflowSecondChunk(t *testing.T) {
 	_, _, err := scanChunkHeaders(buf)
 	if err != nil {
 		t.Errorf("expected no error (two chunk headers parsed), got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Perf event name tests — ActiveSetting-based event classification
+// ---------------------------------------------------------------------------
+
+func TestNormalizeExecEvent(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"cpu-clock", "cpu"},
+		{"branch-misses", "branch-misses"},
+		{"cache-misses", "cache-misses"},
+		{"cycles", "cycles"},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		got := normalizeExecEvent(tt.input)
+		if got != tt.want {
+			t.Errorf("normalizeExecEvent(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestParseJFRBranchMissesSingleFilter(t *testing.T) {
+	parsed, err := parseJFRData(jfrFixture("branch-misses.jfr"), singleEventType("branch-misses"), parseOpts{})
+	if err != nil {
+		t.Fatalf("parseJFRData: %v", err)
+	}
+	sf := parsed.stacksByEvent["branch-misses"]
+	if sf == nil || sf.totalSamples == 0 {
+		t.Errorf("expected stacks for 'branch-misses', got nil/empty")
+	}
+}
+
+func TestParseJFRCpuUnchanged(t *testing.T) {
+	parsed, err := parseJFRData(jfrFixture("cpu.jfr"), nil, parseOpts{})
+	if err != nil {
+		t.Fatalf("parseJFRData: %v", err)
+	}
+	counts := parsed.eventCounts
+	if _, ok := counts["cpu"]; !ok {
+		t.Errorf("expected 'cpu' event in cpu.jfr, got %v", counts)
+	}
+	if parsed.execEventName != "cpu" {
+		t.Errorf("expected execEventName='cpu', got %q", parsed.execEventName)
+	}
+}
+
+func TestParseJFRMultiUnchanged(t *testing.T) {
+	parsed, err := parseJFRData(jfrFixture("multi.jfr"), nil, parseOpts{})
+	if err != nil {
+		t.Fatalf("parseJFRData: %v", err)
+	}
+	counts := parsed.eventCounts
+	if _, ok := counts["cpu"]; !ok {
+		t.Errorf("expected 'cpu' event in multi.jfr, got %v", counts)
+	}
+	if _, ok := counts["wall"]; !ok {
+		t.Errorf("expected 'wall' event in multi.jfr, got %v", counts)
+	}
+}
+
+func TestParseJFRBranchMissesNilFilter(t *testing.T) {
+	parsed, err := parseJFRData(jfrFixture("branch-misses.jfr"), nil, parseOpts{})
+	if err != nil {
+		t.Fatalf("parseJFRData: %v", err)
+	}
+	if parsed.eventCounts["branch-misses"] == 0 {
+		t.Errorf("expected >0 branch-misses samples, got 0")
+	}
+}
+
+func TestParseJFRBranchMissesAll(t *testing.T) {
+	path := jfrFixture("branch-misses-all.jfr")
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		t.Skip("branch-misses-all.jfr not generated; run testdata/gen/generate.sh")
+	}
+	parsed, err := parseJFRData(path, nil, parseOpts{})
+	if err != nil {
+		t.Fatalf("parseJFRData: %v", err)
+	}
+	for _, want := range []string{"branch-misses", "wall", "alloc", "lock"} {
+		if parsed.eventCounts[want] == 0 {
+			t.Errorf("expected >0 %s samples, got 0", want)
+		}
+	}
+	if parsed.eventCounts["cpu"] > 0 {
+		t.Errorf("expected no 'cpu' event, got %d", parsed.eventCounts["cpu"])
+	}
+	if parsed.execEventName != "branch-misses" {
+		t.Errorf("expected execEventName='branch-misses', got %q", parsed.execEventName)
+	}
+}
+
+func TestParseJFRMultichunkExecEventName(t *testing.T) {
+	parsed, err := parseJFRData(jfrFixture("multichunk.jfr"), nil, parseOpts{})
+	if err != nil {
+		t.Fatalf("parseJFRData: %v", err)
+	}
+	if parsed.execEventName != "cpu" {
+		t.Errorf("expected execEventName='cpu' for multichunk, got %q", parsed.execEventName)
+	}
+	if parsed.eventCounts["cpu"] == 0 {
+		t.Errorf("expected >0 cpu samples in multichunk, got 0")
+	}
+}
+
+func TestEventsBranchMisses(t *testing.T) {
+	out := captureOutput(func() {
+		err := cmdEvents(jfrFixture("branch-misses.jfr"))
+		if err != nil {
+			t.Fatalf("cmdEvents: %v", err)
+		}
+	})
+	if !strings.Contains(out, "branch-misses") {
+		t.Errorf("expected 'branch-misses' in events output, got:\n%s", out)
+	}
+}
+
+func TestHotBranchMissesAutoSelect(t *testing.T) {
+	pctx, err := preprocessProfile(preprocessOpts{
+		path:    jfrFixture("branch-misses.jfr"),
+		command: "hot",
+	})
+	if err != nil {
+		t.Fatalf("preprocessProfile: %v", err)
+	}
+	if pctx.eventType != "branch-misses" {
+		t.Errorf("expected auto-selected event type 'branch-misses', got %q", pctx.eventType)
+	}
+	if pctx.sf == nil || pctx.sf.totalSamples == 0 {
+		t.Errorf("expected non-empty stackFile")
+	}
+}
+
+func TestHotBranchMissesExplicit(t *testing.T) {
+	pctx, err := preprocessProfile(preprocessOpts{
+		eventFlag: "branch-misses",
+		path:      jfrFixture("branch-misses.jfr"),
+		command:   "hot",
+	})
+	if err != nil {
+		t.Fatalf("preprocessProfile: %v", err)
+	}
+	if pctx.eventType != "branch-misses" {
+		t.Errorf("expected event type 'branch-misses', got %q", pctx.eventType)
+	}
+	if pctx.sf == nil || pctx.sf.totalSamples == 0 {
+		t.Errorf("expected non-empty stackFile")
+	}
+}
+
+func TestHotBranchMissesCpuFails(t *testing.T) {
+	pctx, err := preprocessProfile(preprocessOpts{
+		eventFlag: "cpu",
+		path:      jfrFixture("branch-misses.jfr"),
+		command:   "hot",
+	})
+	if err != nil {
+		t.Fatalf("preprocessProfile: %v", err)
+	}
+	// cpu is a known event type so it won't error, but the stackFile should be empty
+	if pctx.sf.totalSamples != 0 {
+		t.Errorf("expected 0 cpu samples in branch-misses.jfr, got %d", pctx.sf.totalSamples)
+	}
+}
+
+func TestPreprocessBranchMissesCollapsedReject(t *testing.T) {
+	// Create a temp collapsed file
+	tmp, err := os.CreateTemp("", "test-*.txt")
+	if err != nil {
+		t.Fatalf("create temp: %v", err)
+	}
+	defer os.Remove(tmp.Name())
+	fmt.Fprintln(tmp, "A;B;C 10")
+	tmp.Close()
+
+	_, err = preprocessProfile(preprocessOpts{
+		eventFlag: "branch-misses",
+		path:      tmp.Name(),
+		command:   "hot",
+	})
+	if err == nil {
+		t.Fatalf("expected error for unknown event on collapsed text")
+	}
+	if !strings.Contains(err.Error(), "unknown event type") {
+		t.Errorf("expected 'unknown event type' error, got: %v", err)
+	}
+}
+
+func TestPreprocessCollapsedStdinRejectsUnknownEvent(t *testing.T) {
+	// Collapsed text via stdin with an unknown event should be rejected.
+	stdin := strings.NewReader("A;B;C 10\n")
+	exitCode, _, stderr := runCLIForTest(t, []string{"hot", "-", "-e", "bogus"}, stdin)
+	if exitCode == 0 {
+		t.Fatalf("expected non-zero exit for unknown event on collapsed stdin")
+	}
+	if !strings.Contains(stderr, "unknown event type") {
+		t.Errorf("expected 'unknown event type' error, got: %s", stderr)
+	}
+}
+
+func TestPostParseValidationUnknownEvent(t *testing.T) {
+	// Requesting a non-existent perf event on a cpu.jfr should fail post-parse
+	_, err := preprocessProfile(preprocessOpts{
+		eventFlag: "cache-misses",
+		path:      jfrFixture("cpu.jfr"),
+		command:   "hot",
+	})
+	if err == nil {
+		t.Fatalf("expected error for 'cache-misses' on cpu.jfr")
+	}
+	if !strings.Contains(err.Error(), "cache-misses") || !strings.Contains(err.Error(), "not found") {
+		t.Errorf("expected 'not found' error for cache-misses, got: %v", err)
+	}
+}
+
+func TestHotBranchMissesExplicitWithEmptyWindow(t *testing.T) {
+	// -e branch-misses --from 1h on branch-misses.jfr: the window is empty
+	// but the event exists in the file; should succeed with empty output.
+	pctx, err := preprocessProfile(preprocessOpts{
+		eventFlag: "branch-misses",
+		path:      jfrFixture("branch-misses.jfr"),
+		command:   "hot",
+		fromStr:   "1h",
+	})
+	if err != nil {
+		t.Fatalf("expected no error for empty window, got: %v", err)
+	}
+	if pctx.sf.totalSamples != 0 {
+		t.Errorf("expected 0 samples in empty window, got %d", pctx.sf.totalSamples)
+	}
+}
+
+func TestHotCacheMissesOnCpuWithEmptyWindow(t *testing.T) {
+	// -e cache-misses --from 1h on cpu.jfr: event doesn't exist at all.
+	_, err := preprocessProfile(preprocessOpts{
+		eventFlag: "cache-misses",
+		path:      jfrFixture("cpu.jfr"),
+		command:   "hot",
+		fromStr:   "1h",
+	})
+	if err == nil {
+		t.Fatalf("expected error for 'cache-misses' on cpu.jfr")
+	}
+	if !strings.Contains(err.Error(), "cache-misses") || !strings.Contains(err.Error(), "not found") {
+		t.Errorf("expected 'not found' error for cache-misses, got: %v", err)
+	}
+}
+
+func TestParseJFRStrictWallFilterNoWidening(t *testing.T) {
+	// singleEventType("wall") should NOT collect execution-sample data
+	// via ActiveSetting widening.
+	parsed, err := parseJFRData(jfrFixture("multi.jfr"), singleEventType("wall"), parseOpts{})
+	if err != nil {
+		t.Fatalf("parseJFRData: %v", err)
+	}
+	if _, ok := parsed.stacksByEvent["cpu"]; ok {
+		t.Errorf("strict wall filter should not collect cpu stacks")
+	}
+	if parsed.stacksByEvent["wall"] == nil || parsed.stacksByEvent["wall"].totalSamples == 0 {
+		t.Errorf("expected wall stacks to be collected")
+	}
+}
+
+func TestParseJFRStrictWallFilterNoWideningTimed(t *testing.T) {
+	// Same as above but with collectTimestamps — the timed path should
+	// also respect strict filters.
+	parsed, err := parseJFRData(jfrFixture("multi.jfr"), singleEventType("wall"), parseOpts{
+		collectTimestamps: true,
+		fromNanos:         -1,
+		toNanos:           -1,
+	})
+	if err != nil {
+		t.Fatalf("parseJFRData: %v", err)
+	}
+	if parsed.timedEvents != nil {
+		if _, ok := parsed.timedEvents["cpu"]; ok {
+			t.Errorf("strict wall filter should not collect cpu timed events")
+		}
+		if events, ok := parsed.timedEvents["wall"]; !ok || len(events) == 0 {
+			t.Errorf("expected wall timed events to be collected")
+		}
+	}
+}
+
+func TestParseJFRAllEventsDiscoversBranchMisses(t *testing.T) {
+	// allEventTypes() on branch-misses.jfr should discover branch-misses
+	// via dynamic ActiveSetting add.
+	parsed, err := parseJFRData(jfrFixture("branch-misses.jfr"), allEventTypes(), parseOpts{})
+	if err != nil {
+		t.Fatalf("parseJFRData: %v", err)
+	}
+	if parsed.eventCounts["branch-misses"] == 0 {
+		t.Errorf("expected >0 branch-misses samples with allEventTypes, got 0")
+	}
+	if parsed.stacksByEvent["branch-misses"] == nil || parsed.stacksByEvent["branch-misses"].totalSamples == 0 {
+		t.Errorf("expected branch-misses stacks with allEventTypes")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Diff tests for perf event names
+// ---------------------------------------------------------------------------
+
+func TestDiffBranchMissesSameFile(t *testing.T) {
+	path := jfrFixture("branch-misses.jfr")
+	code, stdout, _ := runCLIForTest(t, []string{"diff", path, path}, nil)
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	if !strings.Contains(stdout, "no significant changes") {
+		t.Errorf("expected 'no significant changes' for same file diff, got:\n%s", stdout)
+	}
+}
+
+func TestDiffCpuVsBranchMisses(t *testing.T) {
+	cpuPath := jfrFixture("cpu.jfr")
+	bmPath := jfrFixture("branch-misses.jfr")
+	_, _, stderr := runCLIForTest(t, []string{"diff", cpuPath, bmPath}, nil)
+	// Should warn about no common event type
+	if !strings.Contains(stderr, "no common event") {
+		t.Errorf("expected 'no common event' warning, got stderr:\n%s", stderr)
+	}
+}
+
+func TestDiffCpuVsBranchMissesExplicitCpu(t *testing.T) {
+	cpuPath := jfrFixture("cpu.jfr")
+	bmPath := jfrFixture("branch-misses.jfr")
+	code, stdout, _ := runCLIForTest(t, []string{"diff", cpuPath, bmPath, "-e", "cpu"}, nil)
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	// All cpu methods should be GONE (after has no cpu)
+	if !strings.Contains(stdout, "GONE") {
+		t.Errorf("expected GONE entries (no cpu in after), got:\n%s", stdout)
+	}
+}
+
+func TestDiffCpuVsBranchMissesExplicitBranchMisses(t *testing.T) {
+	cpuPath := jfrFixture("cpu.jfr")
+	bmPath := jfrFixture("branch-misses.jfr")
+	code, stdout, _ := runCLIForTest(t, []string{"diff", cpuPath, bmPath, "-e", "branch-misses"}, nil)
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	// All branch-misses methods should be NEW (before has no branch-misses)
+	if !strings.Contains(stdout, "NEW") {
+		t.Errorf("expected NEW entries (no branch-misses in before), got:\n%s", stdout)
 	}
 }

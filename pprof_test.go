@@ -2019,8 +2019,8 @@ func TestPprofScriptOpenInvalidEvent(t *testing.T) {
 		}
 	})
 
-	if !strings.Contains(stderr, "unknown event type") {
-		t.Errorf("expected 'unknown event type' error, got stderr:\n%s", stderr)
+	if !strings.Contains(stderr, "bogus") {
+		t.Errorf("expected error mentioning 'bogus', got stderr:\n%s", stderr)
 	}
 }
 

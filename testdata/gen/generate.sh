@@ -73,8 +73,11 @@ profile "$TESTDATA_DIR/wall.jfr"  "start,event=wall,file=$TESTDATA_DIR/wall.jfr"
 profile "$TESTDATA_DIR/alloc.jfr" "start,event=alloc,file=$TESTDATA_DIR/alloc.jfr"
 profile "$TESTDATA_DIR/lock.jfr"  "start,event=lock,file=$TESTDATA_DIR/lock.jfr"
 
-# Hardware counter event (maps to ExecutionSample/cpu in JFR)
+# Hardware counter event (uses ExecutionSample in JFR, discovered via ActiveSetting)
 profile "$TESTDATA_DIR/branch-misses.jfr" "start,event=branch-misses,file=$TESTDATA_DIR/branch-misses.jfr"
+
+# Hardware counter + wall + alloc + lock (exercises perf event alongside standard events)
+profile "$TESTDATA_DIR/branch-misses-all.jfr" "start,event=branch-misses,alloc,lock,wall,file=$TESTDATA_DIR/branch-misses-all.jfr"
 
 # Multi-event: cpu + alloc + lock + wall
 profile "$TESTDATA_DIR/multi.jfr" "start,cpu,alloc,lock,wall,file=$TESTDATA_DIR/multi.jfr"
@@ -100,7 +103,8 @@ echo ""
 echo "Verifying fixtures..."
 AP_QUERY="${AP_QUERY:-go run $SCRIPT_DIR/../..}"
 for f in "$TESTDATA_DIR"/cpu.jfr* "$TESTDATA_DIR"/wall.jfr* "$TESTDATA_DIR"/alloc.jfr* \
-         "$TESTDATA_DIR"/lock.jfr* "$TESTDATA_DIR"/branch-misses.jfr* "$TESTDATA_DIR"/multi.jfr* \
+         "$TESTDATA_DIR"/lock.jfr* "$TESTDATA_DIR"/branch-misses.jfr* \
+         "$TESTDATA_DIR"/branch-misses-all.jfr* "$TESTDATA_DIR"/multi.jfr* \
          "$TESTDATA_DIR"/multichunk.jfr*; do
     if [[ -f "$f" ]]; then
         echo "  $(basename "$f"):"

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -4404,5 +4405,79 @@ for th in threads:
 		if line != "0.0" && line != "0" {
 			t.Errorf("expected 0.0, got %q", line)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Perf event name tests — open() with hardware counter events
+// ---------------------------------------------------------------------------
+
+func TestScriptOpenBranchMisses(t *testing.T) {
+	out := captureOutput(func() {
+		code := runScript(fmt.Sprintf(`p = open(%q); print(p.event); print(p.samples)`, scriptFixture("branch-misses.jfr")), "", nil, testTimeout)
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected 2 lines, got %d: %q", len(lines), out)
+	}
+	if lines[0] != "branch-misses" {
+		t.Errorf("expected event='branch-misses', got %q", lines[0])
+	}
+	samples, err := strconv.Atoi(lines[1])
+	if err != nil || samples <= 0 {
+		t.Errorf("expected >0 samples, got %q", lines[1])
+	}
+}
+
+func TestScriptOpenBranchMissesExplicit(t *testing.T) {
+	out := captureOutput(func() {
+		code := runScript(fmt.Sprintf(`p = open(%q, event="branch-misses"); print(p.samples)`, scriptFixture("branch-misses.jfr")), "", nil, testTimeout)
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	samples, err := strconv.Atoi(strings.TrimSpace(out))
+	if err != nil || samples <= 0 {
+		t.Errorf("expected >0 samples, got %q", out)
+	}
+}
+
+func TestScriptOpenBranchMissesCpuFails(t *testing.T) {
+	stderr := captureStream(&os.Stderr, func() {
+		code := runScript(fmt.Sprintf(`p = open(%q, event="cpu")`, scriptFixture("branch-misses.jfr")), "", nil, testTimeout)
+		if code == 0 {
+			t.Fatalf("expected error for cpu event on branch-misses.jfr")
+		}
+	})
+	if !strings.Contains(stderr, "cpu") || !strings.Contains(stderr, "not found") {
+		t.Fatalf("expected error about cpu not found, got %q", stderr)
+	}
+}
+
+func TestScriptOpenCollapsedStdinRejectsUnknownEvent(t *testing.T) {
+	// Swap os.Stdin to pipe in collapsed text, then open("-", event="bogus").
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	fmt.Fprintln(w, "A;B;C 10")
+	w.Close()
+
+	origStdin := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = origStdin }()
+
+	stderr := captureStream(&os.Stderr, func() {
+		code := runScript(`p = open("-", event="bogus")`, "", nil, testTimeout)
+		if code == 0 {
+			t.Fatalf("expected error for unknown event on collapsed stdin")
+		}
+	})
+	r.Close()
+	if !strings.Contains(stderr, "unknown event type") {
+		t.Errorf("expected 'unknown event type' error, got: %s", stderr)
 	}
 }

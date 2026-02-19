@@ -156,15 +156,15 @@ func TestPrintEventSelectionForDiffOneSidedWarning(t *testing.T) {
 	}
 }
 
-func TestIsValidEventType(t *testing.T) {
+func TestIsKnownEventType(t *testing.T) {
 	for _, et := range validEventTypes {
-		if !isValidEventType(et) {
-			t.Errorf("isValidEventType(%q) = false, want true", et)
+		if !isKnownEventType(et) {
+			t.Errorf("isKnownEventType(%q) = false, want true", et)
 		}
 	}
 	for _, bad := range []string{"", "bogus", "CPU", "itimer"} {
-		if isValidEventType(bad) {
-			t.Errorf("isValidEventType(%q) = true, want false", bad)
+		if isKnownEventType(bad) {
+			t.Errorf("isKnownEventType(%q) = true, want false", bad)
 		}
 	}
 }

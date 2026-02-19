@@ -18,7 +18,7 @@ func init() {
 	}
 }
 
-func isValidEventType(s string) bool {
+func isKnownEventType(s string) bool {
 	_, ok := eventOrder[s]
 	return ok
 }
@@ -103,7 +103,7 @@ func printEventSelectionForDiff(eventType string, reason eventSelectionReason, b
 	beforeKnown := beforeCounts != nil
 	afterKnown := afterCounts != nil
 	oneSided := beforeKnown != afterKnown
-	if len(beforeCounts) <= 1 && len(afterCounts) <= 1 && !oneSided {
+	if len(beforeCounts) <= 1 && len(afterCounts) <= 1 && !oneSided && reason != eventReasonDiffNoCommonFallback {
 		return
 	}
 	fmt.Fprintf(os.Stderr, "Event: %s (%s)\n", eventType, selectionModeLabel(reason))

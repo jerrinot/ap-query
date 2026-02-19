@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -65,8 +66,11 @@ func preprocessProfile(opts preprocessOpts) (*profileContext, error) {
 	if eventType == "" {
 		eventType = "cpu"
 	}
-	if !isValidEventType(eventType) {
-		return nil, fmt.Errorf("unknown event type %q (valid: %s)", eventType, validEventTypesString())
+	if !isKnownEventType(eventType) {
+		format := detectFormat(opts.path)
+		if format == formatCollapsed && opts.path != "-" {
+			return nil, fmt.Errorf("unknown event type %q (valid: %s)", eventType, validEventTypesString())
+		}
 	}
 
 	// Parse time range.
@@ -217,6 +221,33 @@ func preprocessProfile(opts preprocessOpts) (*profileContext, error) {
 		}
 	}
 
+	// Post-parse validation: reject explicitly-requested unknown events.
+	// For structured formats, check against unfiltered metadata counts
+	// (parsed.eventCounts) so --from/--to windows don't cause false
+	// rejections. For collapsed text (no metadata), unknown events are
+	// always invalid since collapsed format has no event types.
+	if eventExplicit && !isKnownEventType(opts.eventFlag) {
+		validationCounts := eventCounts
+		if parsed != nil {
+			validationCounts = parsed.eventCounts
+		}
+		if validationCounts == nil {
+			// Collapsed text — no event metadata exists.
+			return nil, fmt.Errorf("unknown event type %q (valid: %s)", eventType, validEventTypesString())
+		}
+		if validationCounts[eventType] == 0 {
+			available := make([]string, 0, len(validationCounts))
+			for e := range validationCounts {
+				available = append(available, e)
+			}
+			sort.Strings(available)
+			if len(available) == 0 {
+				return nil, fmt.Errorf("event %q not found (no events in file)", eventType)
+			}
+			return nil, fmt.Errorf("event %q not found (available: %s)", eventType, strings.Join(available, ", "))
+		}
+	}
+
 	// Thread filter (skipped for timeline — it does its own).
 	if opts.thread != "" && cmd != "timeline" {
 		totalBefore := sf.totalSamples
@@ -317,7 +348,7 @@ type sharedFlags struct {
 }
 
 func (s *sharedFlags) register(cmd *cobra.Command) {
-	cmd.Flags().StringVarP(&s.event, "event", "e", "", "Event type: cpu, wall, alloc, lock (default: cpu)")
+	cmd.Flags().StringVarP(&s.event, "event", "e", "", "Event type: cpu, wall, alloc, lock, or hardware counter name (default: cpu)")
 	cmd.Flags().StringVarP(&s.thread, "thread", "t", "", "Filter to threads matching substring")
 	cmd.Flags().StringVar(&s.from, "from", "", "Start of time window (JFR only)")
 	cmd.Flags().StringVar(&s.to, "to", "", "End of time window (JFR only)")
