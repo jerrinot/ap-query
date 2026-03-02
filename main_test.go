@@ -6470,6 +6470,9 @@ func TestGlobalHelpMentionsPerCommand(t *testing.T) {
 	if !strings.Contains(stdout, "help") {
 		t.Errorf("global help should mention help, got:\n%s", stdout)
 	}
+	if !strings.Contains(stdout, "timeline profile.jfr --compare cpu,wall") {
+		t.Errorf("global help should mention timeline compare example, got:\n%s", stdout)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -6734,6 +6737,192 @@ func TestCmdTimelineTopWithPct(t *testing.T) {
 	}
 	if dataLines != 3 {
 		t.Errorf("expected 3 data lines, got %d\nOutput:\n%s", dataLines, out)
+	}
+}
+
+func TestParseTimelineCompare(t *testing.T) {
+	tests := []struct {
+		input      string
+		left       string
+		right      string
+		enabled    bool
+		wantErrSub string
+	}{
+		{input: "", enabled: false},
+		{input: "cpu,wall", left: "cpu", right: "wall", enabled: true},
+		{input: "CPU, wall", left: "cpu", right: "wall", enabled: true},
+		{input: "wall,cpu", left: "cpu", right: "wall", enabled: true},
+		{input: "cpu", wantErrSub: "expected cpu,wall or wall,cpu"},
+	}
+	for _, tt := range tests {
+		left, right, enabled, err := parseTimelineCompare(tt.input)
+		if tt.wantErrSub != "" {
+			if err == nil {
+				t.Fatalf("parseTimelineCompare(%q): expected error", tt.input)
+			}
+			if !strings.Contains(err.Error(), tt.wantErrSub) {
+				t.Fatalf("parseTimelineCompare(%q): expected error containing %q, got %q", tt.input, tt.wantErrSub, err.Error())
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("parseTimelineCompare(%q): %v", tt.input, err)
+		}
+		if enabled != tt.enabled || left != tt.left || right != tt.right {
+			t.Fatalf("parseTimelineCompare(%q) = (%q,%q,%v), want (%q,%q,%v)",
+				tt.input, left, right, enabled, tt.left, tt.right, tt.enabled)
+		}
+	}
+}
+
+func TestCmdTimelineCompare(t *testing.T) {
+	parsed, err := parseJFRData(jfrFixture("multi.jfr"), allEventTypes(), parseOpts{
+		collectTimestamps: true,
+		fromNanos:         -1,
+		toNanos:           -1,
+	})
+	if err != nil {
+		t.Fatalf("parseJFRData: %v", err)
+	}
+	out := captureOutput(func() {
+		if err := cmdTimelineCompare(parsed, "cpu", "wall", 8, "", false, "worker", -1, -1); err != nil {
+			t.Fatalf("cmdTimelineCompare: %v", err)
+		}
+	})
+	if !strings.Contains(out, "Compare: cpu/wall") {
+		t.Fatalf("expected compare header, got:\n%s", out)
+	}
+	if !strings.Contains(out, "CPU/WALL") {
+		t.Fatalf("expected ratio column, got:\n%s", out)
+	}
+	if !strings.Contains(out, "3.29") {
+		t.Fatalf("expected ratio values in output, got:\n%s", out)
+	}
+}
+
+func TestCmdTimelineCompareRatioNA(t *testing.T) {
+	parsed := &parsedProfile{
+		eventCounts: map[string]int{"cpu": 1, "wall": 1},
+		timedEvents: map[string][]timedEvent{
+			"cpu":  {},
+			"wall": {},
+		},
+		spanNanos: 1_000_000_000,
+	}
+	out := captureOutput(func() {
+		if err := cmdTimelineCompare(parsed, "cpu", "wall", 1, "", false, "", -1, -1); err != nil {
+			t.Fatalf("cmdTimelineCompare: %v", err)
+		}
+	})
+	if !strings.Contains(out, "n/a") {
+		t.Fatalf("expected n/a ratio for empty bucket, got:\n%s", out)
+	}
+	if strings.Contains(out, "0.00") {
+		t.Fatalf("expected no 0.00 ratio for undefined buckets, got:\n%s", out)
+	}
+}
+
+func TestCmdTimelineCompareMissingWall(t *testing.T) {
+	parsed, err := parseJFRData(jfrFixture("cpu.jfr"), allEventTypes(), parseOpts{
+		collectTimestamps: true,
+		fromNanos:         -1,
+		toNanos:           -1,
+	})
+	if err != nil {
+		t.Fatalf("parseJFRData: %v", err)
+	}
+	err = cmdTimelineCompare(parsed, "cpu", "wall", 5, "", false, "", -1, -1)
+	if err == nil {
+		t.Fatal("expected error when wall event is missing")
+	}
+	if !strings.Contains(err.Error(), "requires cpu and wall events") {
+		t.Fatalf("expected missing-event error, got %q", err.Error())
+	}
+}
+
+func TestTimelineCompareFlagConflicts(t *testing.T) {
+	path := jfrFixture("multi.jfr")
+	tests := []struct {
+		name   string
+		args   []string
+		errSub string
+	}{
+		{
+			name:   "event",
+			args:   []string{"timeline", path, "--compare", "cpu,wall", "--event", "cpu"},
+			errSub: "--event cannot be used with --compare",
+		},
+		{
+			name:   "method",
+			args:   []string{"timeline", path, "--compare", "cpu,wall", "--method", "Workload"},
+			errSub: "--method cannot be used with --compare",
+		},
+		{
+			name:   "pct",
+			args:   []string{"timeline", path, "--compare", "cpu,wall", "--pct"},
+			errSub: "--pct cannot be used with --compare",
+		},
+		{
+			name:   "hide",
+			args:   []string{"timeline", path, "--compare", "cpu,wall", "--hide", "Workload"},
+			errSub: "--hide cannot be used with --compare",
+		},
+		{
+			name:   "top",
+			args:   []string{"timeline", path, "--compare", "cpu,wall", "--top", "3"},
+			errSub: "--top cannot be used with --compare",
+		},
+		{
+			name:   "no-top-method",
+			args:   []string{"timeline", path, "--compare", "cpu,wall", "--no-top-method"},
+			errSub: "--no-top-method cannot be used with --compare",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code, _, stderr := runCLIForTest(t, tt.args, nil)
+			if code == 0 {
+				t.Fatalf("expected non-zero exit code for %s conflict", tt.name)
+			}
+			if !strings.Contains(stderr, tt.errSub) {
+				t.Fatalf("expected stderr to contain %q, got:\n%s", tt.errSub, stderr)
+			}
+		})
+	}
+}
+
+func TestTimelineCompareCLI(t *testing.T) {
+	path := jfrFixture("multi.jfr")
+	code, stdout, stderr := runCLIForTest(t, []string{"timeline", path, "--compare", "cpu,wall", "--thread", "worker", "--buckets", "8"}, nil)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stdout, "Compare: cpu/wall") {
+		t.Fatalf("expected compare header, got:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "CPU/WALL") {
+		t.Fatalf("expected ratio column, got:\n%s", stdout)
+	}
+}
+
+func TestTimelineCompareCLIReversedOrder(t *testing.T) {
+	path := jfrFixture("multi.jfr")
+	code, stdout, stderr := runCLIForTest(t, []string{"timeline", path, "--compare", "wall,cpu", "--thread", "worker", "--buckets", "4"}, nil)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stdout, "Compare: cpu/wall") {
+		t.Fatalf("expected normalized compare header, got:\n%s", stdout)
+	}
+}
+
+func TestTimelineHelpMentionsCompareConflicts(t *testing.T) {
+	code, stdout, _ := runCLIForTest(t, []string{"timeline", "--help"}, nil)
+	if code != 0 {
+		t.Fatalf("timeline --help exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "--compare") || !strings.Contains(stdout, "incompatible with") {
+		t.Fatalf("expected compare conflict guidance in timeline help, got:\n%s", stdout)
 	}
 }
 

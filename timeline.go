@@ -16,6 +16,7 @@ func newTimelineCmd() *cobra.Command {
 	var shared sharedFlags
 	var buckets int
 	var resolution string
+	var compare string
 	var method string
 	var noTopMethod bool
 	var topN int
@@ -24,11 +25,45 @@ func newTimelineCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "timeline <file>",
 		Short: "Sample distribution over time (JFR only)",
-		Args:  cobra.ExactArgs(1),
+		Example: strings.Join([]string{
+			"  ap-query timeline profile.jfr --buckets 20",
+			"  ap-query timeline profile.jfr --method HashMap.get --pct",
+			"  ap-query timeline profile.jfr --compare cpu,wall --thread worker",
+		}, "\n"),
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			compareLeft, compareRight, compareEnabled, err := parseTimelineCompare(compare)
+			if err != nil {
+				return err
+			}
+			if compareEnabled {
+				if shared.event != "" {
+					return fmt.Errorf("--event cannot be used with --compare")
+				}
+				if method != "" {
+					return fmt.Errorf("--method cannot be used with --compare")
+				}
+				if pctFlag {
+					return fmt.Errorf("--pct cannot be used with --compare")
+				}
+				if hide != "" {
+					return fmt.Errorf("--hide cannot be used with --compare")
+				}
+				if topN > 0 {
+					return fmt.Errorf("--top cannot be used with --compare")
+				}
+				if noTopMethod {
+					return fmt.Errorf("--no-top-method cannot be used with --compare")
+				}
+			}
+
 			pctx, err := preprocessProfile(shared.toOpts(args[0], "timeline"))
 			if err != nil {
 				return err
+			}
+			if compareEnabled {
+				return cmdTimelineCompare(pctx.parsed, compareLeft, compareRight, buckets, resolution,
+					shared.noIdle, shared.thread, pctx.fromNanos, pctx.toNanos)
 			}
 			var hideRe *regexp.Regexp
 			if hide != "" {
@@ -46,12 +81,32 @@ func newTimelineCmd() *cobra.Command {
 	shared.register(cmd)
 	cmd.Flags().IntVar(&buckets, "buckets", 0, "Number of time buckets (default: auto ~20)")
 	cmd.Flags().StringVar(&resolution, "resolution", "", "Fixed bucket width (e.g. 1s, 500ms)")
+	cmd.Flags().StringVar(&compare, "compare", "", "Compare events as a ratio (cpu,wall or wall,cpu; incompatible with --event/--method/--pct/--hide/--top/--no-top-method)")
 	cmd.Flags().StringVarP(&method, "method", "m", "", "Only count samples containing METHOD")
 	cmd.Flags().BoolVar(&noTopMethod, "no-top-method", false, "Omit per-bucket hot method annotation")
 	cmd.Flags().IntVar(&topN, "top", 0, "Show only the N highest-sample buckets")
 	cmd.Flags().BoolVar(&pctFlag, "pct", false, "Show method percentage per bucket")
 	cmd.Flags().StringVar(&hide, "hide", "", "Remove matching frames before analysis (regex)")
 	return cmd
+}
+
+func parseTimelineCompare(raw string) (left, right string, enabled bool, err error) {
+	if raw == "" {
+		return "", "", false, nil
+	}
+	parts := strings.Split(raw, ",")
+	if len(parts) != 2 {
+		return "", "", false, fmt.Errorf("invalid --compare %q (expected cpu,wall or wall,cpu)", raw)
+	}
+	a := strings.ToLower(strings.TrimSpace(parts[0]))
+	b := strings.ToLower(strings.TrimSpace(parts[1]))
+	if a == "cpu" && b == "wall" {
+		return "cpu", "wall", true, nil
+	}
+	if a == "wall" && b == "cpu" {
+		return "cpu", "wall", true, nil
+	}
+	return "", "", false, fmt.Errorf("invalid --compare %q (expected cpu,wall or wall,cpu)", raw)
 }
 
 func resolveBucketRange(fromNanos, toNanos, span int64, events []timedEvent) (bucketOrigin, bucketSpan int64) {
@@ -448,6 +503,173 @@ func cmdTimeline(parsed *parsedProfile, eventType string,
 		} else {
 			fmt.Printf("%-17s %s  %s%s\n", timeLabel, valueStr, bar, peak)
 		}
+	}
+	return nil
+}
+
+func cmdTimelineCompare(parsed *parsedProfile, leftEvent, rightEvent string,
+	buckets int, resolution string, noIdle bool, thread string, fromNanos, toNanos int64) error {
+
+	if parsed == nil {
+		return fmt.Errorf("timeline compare requires parsed profile data")
+	}
+	if parsed.eventCounts[leftEvent] == 0 || parsed.eventCounts[rightEvent] == 0 {
+		var available []string
+		for name, n := range parsed.eventCounts {
+			if n > 0 {
+				available = append(available, name)
+			}
+		}
+		sort.Strings(available)
+		if len(available) == 0 {
+			return fmt.Errorf("timeline compare requires cpu and wall events (no events in file)")
+		}
+		return fmt.Errorf("timeline compare requires cpu and wall events (available: %s)", strings.Join(available, ", "))
+	}
+
+	leftEvents := parsed.timedEvents[leftEvent]
+	rightEvents := parsed.timedEvents[rightEvent]
+	rangeEvents := make([]timedEvent, 0, len(leftEvents)+len(rightEvents))
+	rangeEvents = append(rangeEvents, leftEvents...)
+	rangeEvents = append(rangeEvents, rightEvents...)
+	bucketOrigin, bucketSpan := resolveBucketRange(fromNanos, toNanos, parsed.spanNanos, rangeEvents)
+
+	if noIdle {
+		var totalBefore int
+		for i := range leftEvents {
+			totalBefore += leftEvents[i].weight
+		}
+		leftEvents = filterIdleEvents(leftEvents)
+		var filteredWeight int
+		for i := range leftEvents {
+			filteredWeight += leftEvents[i].weight
+		}
+		if totalBefore > 0 {
+			fmt.Fprintf(os.Stderr, "Idle filter (cpu): %d/%d samples remain (%.1f%% idle removed)\n",
+				filteredWeight, totalBefore, pctOf(totalBefore-filteredWeight, totalBefore))
+		}
+
+		totalBefore = 0
+		for i := range rightEvents {
+			totalBefore += rightEvents[i].weight
+		}
+		rightEvents = filterIdleEvents(rightEvents)
+		filteredWeight = 0
+		for i := range rightEvents {
+			filteredWeight += rightEvents[i].weight
+		}
+		if totalBefore > 0 {
+			fmt.Fprintf(os.Stderr, "Idle filter (wall): %d/%d samples remain (%.1f%% idle removed)\n",
+				filteredWeight, totalBefore, pctOf(totalBefore-filteredWeight, totalBefore))
+		}
+	}
+
+	if thread != "" {
+		var totalBefore int
+		for i := range leftEvents {
+			totalBefore += leftEvents[i].weight
+		}
+		var leftFiltered []timedEvent
+		for i := range leftEvents {
+			if strings.Contains(leftEvents[i].thread, thread) {
+				leftFiltered = append(leftFiltered, leftEvents[i])
+			}
+		}
+		leftEvents = leftFiltered
+		var filteredWeight int
+		for i := range leftEvents {
+			filteredWeight += leftEvents[i].weight
+		}
+		if totalBefore > 0 {
+			fmt.Fprintf(os.Stderr, "Thread filter (cpu): %s — %d/%d samples (%.1f%%)\n",
+				thread, filteredWeight, totalBefore, pctOf(filteredWeight, totalBefore))
+		}
+
+		totalBefore = 0
+		for i := range rightEvents {
+			totalBefore += rightEvents[i].weight
+		}
+		var rightFiltered []timedEvent
+		for i := range rightEvents {
+			if strings.Contains(rightEvents[i].thread, thread) {
+				rightFiltered = append(rightFiltered, rightEvents[i])
+			}
+		}
+		rightEvents = rightFiltered
+		filteredWeight = 0
+		for i := range rightEvents {
+			filteredWeight += rightEvents[i].weight
+		}
+		if totalBefore > 0 {
+			fmt.Fprintf(os.Stderr, "Thread filter (wall): %s — %d/%d samples (%.1f%%)\n",
+				thread, filteredWeight, totalBefore, pctOf(filteredWeight, totalBefore))
+		}
+	}
+
+	numBuckets, bucketWidth, err := computeBucketWidth(bucketSpan, buckets, resolution)
+	if err != nil {
+		return err
+	}
+	const maxBuckets = 10_000
+	if numBuckets > maxBuckets {
+		return fmt.Errorf("bucket count %d exceeds maximum (%d); use a larger --resolution or fewer --buckets", numBuckets, maxBuckets)
+	}
+
+	leftCounts := make([]int, numBuckets)
+	rightCounts := make([]int, numBuckets)
+	assignBucket := func(offsetNanos int64) int {
+		if bucketSpan == 0 {
+			return 0
+		}
+		idx := int((offsetNanos - bucketOrigin) * int64(numBuckets) / bucketSpan)
+		if idx < 0 {
+			idx = 0
+		}
+		if idx >= numBuckets {
+			idx = numBuckets - 1
+		}
+		return idx
+	}
+
+	leftTotal := 0
+	for i := range leftEvents {
+		idx := assignBucket(leftEvents[i].offsetNanos)
+		leftCounts[idx] += leftEvents[i].weight
+		leftTotal += leftEvents[i].weight
+	}
+
+	rightTotal := 0
+	for i := range rightEvents {
+		idx := assignBucket(rightEvents[i].offsetNanos)
+		rightCounts[idx] += rightEvents[i].weight
+		rightTotal += rightEvents[i].weight
+	}
+
+	durationStr := formatDuration(bucketSpan)
+	widthStr := formatBucketWidth(bucketWidth)
+	fmt.Printf("Duration: %s  Buckets: %d (%s each)  Compare: cpu/wall  Total: cpu=%d wall=%d\n\n",
+		durationStr, numBuckets, widthStr, leftTotal, rightTotal)
+	fmt.Printf("%-17s %8s %8s %9s\n", "Time", "CPU", "WALL", "CPU/WALL")
+
+	for i := 0; i < numBuckets; i++ {
+		start := bucketOrigin + int64(i)*bucketWidth
+		end := start + bucketWidth
+		startStr := formatTimelineTimestamp(start, bucketWidth)
+		endStr := formatTimelineTimestamp(end, bucketWidth)
+		timeLabel := startStr + "-" + endStr
+
+		cpuCount := leftCounts[i]
+		wallCount := rightCounts[i]
+		ratio := "n/a"
+		if wallCount == 0 {
+			if cpuCount > 0 {
+				ratio = "inf"
+			}
+		} else {
+			ratio = fmt.Sprintf("%.2f", float64(cpuCount)/float64(wallCount))
+		}
+
+		fmt.Printf("%-17s %8d %8d %9s\n", timeLabel, cpuCount, wallCount, ratio)
 	}
 	return nil
 }

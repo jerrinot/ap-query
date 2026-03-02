@@ -367,6 +367,7 @@ Examples:
   ap-query hot profile.jfr --event cpu --top 20
   ap-query hot cpu.pb.gz
   ap-query timeline profile.jfr
+  ap-query timeline profile.jfr --compare cpu,wall --thread worker
   ap-query hot profile.jfr --from 5s --to 10s
   ap-query tree profile.jfr -m HashMap.resize --depth 6
   ap-query diff before.jfr after.pb.gz --min-delta 0.5
