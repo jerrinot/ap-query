@@ -371,6 +371,7 @@ Examples:
   ap-query hot profile.jfr --from 5s --to 10s
   ap-query tree profile.jfr -m HashMap.resize --depth 6
   ap-query diff before.jfr after.pb.gz --min-delta 0.5
+  ap-query diff profile.jfr --from 55s --to 1m05s --vs-from 2m45s --vs-to 3m10s
   ap-query collapse profile.jfr --event wall | ap-query hot -
   echo "A;B;C 10" | ap-query hot -
 

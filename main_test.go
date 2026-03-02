@@ -5901,13 +5901,99 @@ func TestToClamping(t *testing.T) {
 	}
 }
 
-func TestFromToWithDiffError(t *testing.T) {
-	exitCode, _, stderr := runCLIForTest(t, []string{"diff", "--from", "5s", "a.jfr", "b.jfr"}, nil)
+func TestDiffSingleFileWindowMode(t *testing.T) {
+	path := jfrFixture("multi.jfr")
+	exitCode, stdout, stderr := runCLIForTest(t,
+		[]string{"diff", path, "--from", "0s", "--vs-from", "0s"}, nil)
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", exitCode, stderr)
+	}
+	if !strings.Contains(stdout, "no significant changes") {
+		t.Fatalf("expected no changes for identical windows, got stdout=%q stderr=%q", stdout, stderr)
+	}
+}
+
+func TestDiffSingleFileWindowRequiresVsWindow(t *testing.T) {
+	path := jfrFixture("multi.jfr")
+	exitCode, _, stderr := runCLIForTest(t, []string{"diff", path, "--from", "0s"}, nil)
 	if exitCode == 0 {
 		t.Fatalf("exit code = 0, want non-zero; stderr=%q", stderr)
 	}
-	if !strings.Contains(stderr, "unknown flag") {
-		t.Fatalf("expected unknown flag error, got %q", stderr)
+	if !strings.Contains(stderr, "requires at least one of --vs-from or --vs-to") {
+		t.Fatalf("expected missing --vs-* validation, got %q", stderr)
+	}
+}
+
+func TestDiffSingleFileRequiresTwoWindows(t *testing.T) {
+	path := jfrFixture("multi.jfr")
+	exitCode, _, stderr := runCLIForTest(t, []string{"diff", path}, nil)
+	if exitCode == 0 {
+		t.Fatalf("exit code = 0, want non-zero; stderr=%q", stderr)
+	}
+	if !strings.Contains(stderr, "requires two time windows") {
+		t.Fatalf("expected single-file mode validation, got %q", stderr)
+	}
+}
+
+func TestDiffTwoFileRejectsWindowFlags(t *testing.T) {
+	path := jfrFixture("multi.jfr")
+	exitCode, _, stderr := runCLIForTest(t,
+		[]string{"diff", path, path, "--from", "0s", "--vs-from", "0s"}, nil)
+	if exitCode == 0 {
+		t.Fatalf("exit code = 0, want non-zero; stderr=%q", stderr)
+	}
+	if !strings.Contains(stderr, "can only be used with single-file diff mode") {
+		t.Fatalf("expected two-file incompatibility error, got %q", stderr)
+	}
+}
+
+func TestDiffSingleFileWindowRejectsNonJFR(t *testing.T) {
+	exitCode, _, stderr := runCLIForTest(t,
+		[]string{"diff", "does-not-exist.collapsed", "--from", "0s", "--vs-from", "1s"}, nil)
+	if exitCode == 0 {
+		t.Fatalf("exit code = 0, want non-zero; stderr=%q", stderr)
+	}
+	if !strings.Contains(stderr, "single-file window diff requires a JFR file") {
+		t.Fatalf("expected JFR-only validation, got %q", stderr)
+	}
+	if strings.Contains(stderr, "no such file or directory") {
+		t.Fatalf("expected rejection before attempting to open file, got %q", stderr)
+	}
+}
+
+func TestDiffSingleFileWindowVsRangeValidation(t *testing.T) {
+	path := jfrFixture("multi.jfr")
+	exitCode, _, stderr := runCLIForTest(t,
+		[]string{"diff", path, "--from", "0s", "--vs-from", "2s", "--vs-to", "1s"}, nil)
+	if exitCode == 0 {
+		t.Fatalf("exit code = 0, want non-zero; stderr=%q", stderr)
+	}
+	if !strings.Contains(stderr, "--vs-to must be >= --vs-from") {
+		t.Fatalf("expected --vs-* range validation error, got %q", stderr)
+	}
+}
+
+func TestDiffSingleFileWindowRejectsRepeatedTo(t *testing.T) {
+	path := jfrFixture("multi.jfr")
+	exitCode, _, stderr := runCLIForTest(t,
+		[]string{"diff", path, "--from", "1s", "--to", "2s", "--vs-from", "3s", "--to", "4s"}, nil)
+	if exitCode == 0 {
+		t.Fatalf("exit code = 0, want non-zero; stderr=%q", stderr)
+	}
+	if !strings.Contains(stderr, "--to must not be repeated") {
+		t.Fatalf("expected duplicate --to validation error, got %q", stderr)
+	}
+}
+
+func TestDiffSingleFileWindowRejectsRepeatedVsFrom(t *testing.T) {
+	path := jfrFixture("multi.jfr")
+	exitCode, _, stderr := runCLIForTest(t,
+		[]string{"diff", path, "--from", "1s", "--vs-from", "2s", "--vs-from", "3s"}, nil)
+	if exitCode == 0 {
+		t.Fatalf("exit code = 0, want non-zero; stderr=%q", stderr)
+	}
+	if !strings.Contains(stderr, "--vs-from must not be repeated") {
+		t.Fatalf("expected duplicate --vs-from validation error, got %q", stderr)
 	}
 }
 

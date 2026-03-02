@@ -42,7 +42,9 @@ Use `{{ASPROF_PATH}}` to record profiles. Common invocations:
 4. **Callers**: `{{AP_QUERY_PATH}} callers profile.jfr -m HashMap.resize`
 5. **Lines**: `{{AP_QUERY_PATH}} lines profile.jfr -m HashMap.resize`
 6. **Thread focus**: `{{AP_QUERY_PATH}} hot profile.jfr -t "http-nio" --top 20`
-7. **Compare**: `{{AP_QUERY_PATH}} diff before.jfr after.jfr --min-delta 0.5` — REGRESSION/IMPROVEMENT/NEW/GONE.
+7. **Compare**:
+   `{{AP_QUERY_PATH}} diff before.jfr after.jfr --min-delta 0.5` — REGRESSION/IMPROVEMENT/NEW/GONE.
+   `{{AP_QUERY_PATH}} diff profile.jfr --from 55s --to 1m05s --vs-from 2m45s --vs-to 3m10s` — compare two windows in one JFR.
 8. **Timeline**: `{{AP_QUERY_PATH}} timeline profile.jfr` — sample distribution over time.
    Use `--from 12s --to 14s` with any command to zoom into a time window.
    Use `--top 5` to show only the highest-sample buckets; `-m METHOD --pct` for relative percentages.
@@ -79,6 +81,7 @@ Values use Go duration syntax: `500ms`, `2s`, `1m30s`.
 - `{{AP_QUERY_PATH}} timeline profile.jfr --from 5s --to 15s` — timeline of a 10-second slice.
 
 Combine with `timeline` to first identify spikes, then zoom in with `--from`/`--to` on any command.
+For same-file time-window diff, use `diff <file> --from/--to ... --vs-from/--vs-to ...` (JFR only).
 
 ## Timeline flags
 

@@ -9,17 +9,82 @@ import (
 	"github.com/spf13/cobra"
 )
 
+type singleAssignStringValue struct {
+	name   string
+	value  *string
+	wasSet bool
+}
+
+func (s *singleAssignStringValue) String() string {
+	if s.value == nil {
+		return ""
+	}
+	return *s.value
+}
+
+func (s *singleAssignStringValue) Set(v string) error {
+	if s.wasSet {
+		return fmt.Errorf("%s must not be repeated", s.name)
+	}
+	s.wasSet = true
+	if s.value != nil {
+		*s.value = v
+	}
+	return nil
+}
+
+func (s *singleAssignStringValue) Type() string {
+	return "string"
+}
+
 func newDiffCmd() *cobra.Command {
 	var event string
 	var thread string
 	var minDelta float64
 	var top int
 	var fqn bool
+	var fromStr string
+	var toStr string
+	var vsFromStr string
+	var vsToStr string
 	cmd := &cobra.Command{
-		Use:   "diff <before> <after>",
+		Use:   "diff <before> <after> | diff <file> --from DURATION [--to DURATION] --vs-from DURATION [--vs-to DURATION]",
 		Short: "Compare two profiles: shows REGRESSION / IMPROVEMENT / NEW / GONE",
-		Args:  cobra.ExactArgs(2),
+		Example: strings.Join([]string{
+			"  ap-query diff before.jfr after.jfr --min-delta 0.5",
+			"  ap-query diff profile.jfr --from 55s --to 1m05s --vs-from 2m45s --vs-to 3m10s",
+		}, "\n"),
+		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			windowMode := fromStr != "" || toStr != "" || vsFromStr != "" || vsToStr != ""
+			if len(args) == 1 {
+				path := args[0]
+				if !windowMode {
+					return fmt.Errorf("single-file diff requires two time windows: --from/--to and --vs-from/--vs-to")
+				}
+				if detectFormat(path) != formatJFR {
+					return fmt.Errorf("single-file window diff requires a JFR file")
+				}
+				beforeWindow, err := parseDurationWindow("--from", fromStr, "--to", toStr)
+				if err != nil {
+					return err
+				}
+				if !beforeWindow.specified {
+					return fmt.Errorf("single-file diff requires at least one of --from or --to")
+				}
+				afterWindow, err := parseDurationWindow("--vs-from", vsFromStr, "--vs-to", vsToStr)
+				if err != nil {
+					return err
+				}
+				if !afterWindow.specified {
+					return fmt.Errorf("single-file diff requires at least one of --vs-from or --vs-to")
+				}
+				return runSingleFileWindowDiff(path, beforeWindow, afterWindow, event, thread, minDelta, top, fqn)
+			}
+			if windowMode {
+				return fmt.Errorf("--from/--to/--vs-from/--vs-to can only be used with single-file diff mode")
+			}
+
 			beforePath := args[0]
 			afterPath := args[1]
 
@@ -161,7 +226,102 @@ func newDiffCmd() *cobra.Command {
 	cmd.Flags().Float64Var(&minDelta, "min-delta", 0.5, "Hide entries below this % change")
 	cmd.Flags().IntVar(&top, "top", 0, "Limit output rows (default: unlimited)")
 	cmd.Flags().BoolVar(&fqn, "fqn", false, "Show fully-qualified names")
+	cmd.Flags().Var(&singleAssignStringValue{name: "--from", value: &fromStr}, "from", "Start of first time window (single-file JFR diff only)")
+	cmd.Flags().Var(&singleAssignStringValue{name: "--to", value: &toStr}, "to", "End of first time window (single-file JFR diff only)")
+	cmd.Flags().Var(&singleAssignStringValue{name: "--vs-from", value: &vsFromStr}, "vs-from", "Start of second time window (single-file JFR diff only)")
+	cmd.Flags().Var(&singleAssignStringValue{name: "--vs-to", value: &vsToStr}, "vs-to", "End of second time window (single-file JFR diff only)")
 	return cmd
+}
+
+func runSingleFileWindowDiff(path string, beforeWindow, afterWindow durationWindow, event, thread string, minDelta float64, top int, fqn bool) error {
+	eventExplicit := event != ""
+	eventType := event
+	if eventType == "" {
+		eventType = "cpu"
+	}
+
+	eventsToParse := allEventTypes()
+	if eventExplicit {
+		eventsToParse = singleEventType(eventType)
+	}
+
+	parseWindow := func(w durationWindow) (*parsedProfile, map[string]int, error) {
+		parsed, err := parseJFRData(path, eventsToParse, parseOpts{
+			collectTimestamps: true,
+			fromNanos:         w.fromNanos,
+			toNanos:           w.toNanos,
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		return parsed, eventCountsFromTimedEvents(parsed.timedEvents), nil
+	}
+
+	beforeParsed, beforeEventCounts, err := parseWindow(beforeWindow)
+	if err != nil {
+		return err
+	}
+	afterParsed, afterEventCounts, err := parseWindow(afterWindow)
+	if err != nil {
+		return err
+	}
+
+	eventType, eventReason := resolveEventTypeForDiff(eventType, eventExplicit, beforeEventCounts, afterEventCounts)
+
+	if eventExplicit && !isKnownEventType(eventType) {
+		hasBefore := beforeParsed.eventCounts != nil && beforeParsed.eventCounts[eventType] > 0
+		hasAfter := afterParsed.eventCounts != nil && afterParsed.eventCounts[eventType] > 0
+		if !hasBefore && !hasAfter {
+			available := make(map[string]struct{})
+			for e := range beforeParsed.eventCounts {
+				available[e] = struct{}{}
+			}
+			for e := range afterParsed.eventCounts {
+				available[e] = struct{}{}
+			}
+			names := make([]string, 0, len(available))
+			for e := range available {
+				names = append(names, e)
+			}
+			sort.Strings(names)
+			if len(names) == 0 {
+				return fmt.Errorf("event %q not found (no events in file)", eventType)
+			}
+			return fmt.Errorf("event %q not found (available: %s)", eventType, strings.Join(names, ", "))
+		}
+	}
+
+	before := beforeParsed.stacksByEvent[eventType]
+	if before == nil {
+		before = &stackFile{}
+	}
+	after := afterParsed.stacksByEvent[eventType]
+	if after == nil {
+		after = &stackFile{}
+	}
+
+	if thread != "" {
+		before = before.filterByThread(thread)
+		after = after.filterByThread(thread)
+	}
+
+	printEventSelectionForDiff(eventType, eventReason, beforeEventCounts, afterEventCounts)
+	cmdDiff(before, after, minDelta, top, fqn)
+	return nil
+}
+
+func eventCountsFromTimedEvents(timedByEvent map[string][]timedEvent) map[string]int {
+	counts := make(map[string]int)
+	for eventType, events := range timedByEvent {
+		total := 0
+		for i := range events {
+			total += events[i].weight
+		}
+		if total > 0 {
+			counts[eventType] = total
+		}
+	}
+	return counts
 }
 
 func selfPcts(sf *stackFile, fqn bool) map[string]float64 {
