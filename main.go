@@ -74,35 +74,13 @@ func preprocessProfile(opts preprocessOpts) (*profileContext, error) {
 	}
 
 	// Parse time range.
-	fromNanos := int64(-1)
-	toNanos := int64(-1)
-	needTimed := false
-	if opts.fromStr != "" || opts.toStr != "" {
-		needTimed = true
-		if opts.fromStr != "" {
-			d, err := time.ParseDuration(opts.fromStr)
-			if err != nil {
-				return nil, fmt.Errorf("invalid --from value %q: %v", opts.fromStr, err)
-			}
-			fromNanos = d.Nanoseconds()
-			if fromNanos < 0 {
-				return nil, fmt.Errorf("--from must not be negative (got %s)", opts.fromStr)
-			}
-		}
-		if opts.toStr != "" {
-			d, err := time.ParseDuration(opts.toStr)
-			if err != nil {
-				return nil, fmt.Errorf("invalid --to value %q: %v", opts.toStr, err)
-			}
-			toNanos = d.Nanoseconds()
-			if toNanos < 0 {
-				return nil, fmt.Errorf("--to must not be negative (got %s)", opts.toStr)
-			}
-		}
-		if fromNanos >= 0 && toNanos >= 0 && toNanos < fromNanos {
-			return nil, fmt.Errorf("--to must be >= --from")
-		}
+	window, err := parseDurationWindow("--from", opts.fromStr, "--to", opts.toStr)
+	if err != nil {
+		return nil, err
 	}
+	fromNanos := window.fromNanos
+	toNanos := window.toNanos
+	needTimed := window.specified
 
 	path := opts.path
 	cmd := opts.command

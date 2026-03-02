@@ -231,29 +231,15 @@ func builtinOpen(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, k
 	format := detectFormat(path)
 	switch format {
 	case formatJFR:
-		opts := parseOpts{fromNanos: -1, toNanos: -1, warnLargeCount: true}
-
-		if start != "" {
-			d, err := time.ParseDuration(start)
-			if err != nil {
-				return nil, fmt.Errorf("open: invalid start %q: %v", start, err)
-			}
-			opts.fromNanos = d.Nanoseconds()
-			if opts.fromNanos < 0 {
-				return nil, fmt.Errorf("open: start must not be negative (got %s)", start)
-			}
-			opts.collectTimestamps = true
+		window, err := parseDurationWindow("start", start, "end", end)
+		if err != nil {
+			return nil, fmt.Errorf("open: %v", err)
 		}
-		if end != "" {
-			d, err := time.ParseDuration(end)
-			if err != nil {
-				return nil, fmt.Errorf("open: invalid end %q: %v", end, err)
-			}
-			opts.toNanos = d.Nanoseconds()
-			if opts.toNanos < 0 {
-				return nil, fmt.Errorf("open: end must not be negative (got %s)", end)
-			}
-			opts.collectTimestamps = true
+		opts := parseOpts{
+			fromNanos:         window.fromNanos,
+			toNanos:           window.toNanos,
+			collectTimestamps: window.specified,
+			warnLargeCount:    true,
 		}
 
 		parsed, err := parseJFRData(path, allEventTypes(), opts)
@@ -265,7 +251,32 @@ func builtinOpen(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, k
 		if err := validateOpenEvent(parsed.eventCounts, event, path); err != nil {
 			return nil, err
 		}
-		return openProfileResult(parsed, event, thread, path), nil
+		profile := openProfileResult(parsed, event, thread, path)
+		if start != "" || end != "" {
+			scopeStart := int64(0)
+			if opts.fromNanos >= 0 {
+				scopeStart = opts.fromNanos
+			}
+			scopeEnd := parsed.spanNanos
+			if opts.toNanos >= 0 {
+				scopeEnd = opts.toNanos
+			}
+			if parsed.spanNanos > 0 {
+				if scopeStart > parsed.spanNanos {
+					scopeStart = parsed.spanNanos
+				}
+				if scopeEnd > parsed.spanNanos {
+					scopeEnd = parsed.spanNanos
+				}
+			} else if scopeEnd < 0 {
+				scopeEnd = 0
+			}
+			if scopeEnd < scopeStart {
+				scopeEnd = scopeStart
+			}
+			profile.setScope(scopeStart, scopeEnd-scopeStart)
+		}
+		return profile, nil
 
 	case formatPprof:
 		if start != "" || end != "" {

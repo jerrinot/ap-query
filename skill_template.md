@@ -131,7 +131,9 @@ Key scripting APIs: `Profile.hot(sort="total")` ranks by total time instead of s
 `Stack.thread_has(pattern)` substring-matches on thread name; `round(x, decimals=0)` rounds floats;
 `ljust(value, width)`/`rjust(value, width)` justify strings (like Python's str.ljust/rjust);
 `Profile.summary()` returns a one-line summary string;
-`Profile.start`/`.end` return scope boundaries in seconds (0/duration for root profiles, matching split/bucket boundaries for scoped profiles);
+`Profile.start`/`.end` return scope boundaries in seconds (0/duration for unscoped root profiles; `open(start=..., end=...)`, `split()`, and `bucket.profile` are scoped);
+`Profile.timeline()` respects profile scope (including `open(start/end)` windows) for both bucket counts and labels;
+`open(path, start=..., end=...)` requires `end >= start`;
 `Profile.split()` accepts duration strings (`"5s"`, `"1m30s"`) alongside float seconds;
 `diff(a, b, min_delta=0.5, top=0, fqn=False)` compares two Profiles — `top` limits entries per category, `fqn` uses fully-qualified names (changes aggregation granularity).
 

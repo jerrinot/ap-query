@@ -15,18 +15,21 @@ import (
 // ---------------------------------------------------------------------------
 
 type starlarkProfile struct {
-	sf                *stackFile
-	parsed            *parsedProfile
-	timedParsed       *parsedProfile // lazy re-parse with timestamps
-	scopedEvents      []timedEvent   // non-nil for split-derived profiles (preserves temporal identity)
-	event             string
-	events            []string
-	path              string
-	frozen            bool
-	scopedOriginNanos int64          // global offset of scope start (0 for root)
-	scopedSpanNanos   int64          // duration of scope window in nanos
-	isScoped          bool           // true for bucket/split-derived profiles
-	stackList         *starlark.List // cached
+	sf          *stackFile
+	parsed      *parsedProfile
+	timedParsed *parsedProfile // lazy re-parse with timestamps
+	scope       *profileScope
+	event       string
+	events      []string
+	path        string
+	frozen      bool
+	stackList   *starlark.List // cached
+}
+
+type profileScope struct {
+	originNanos int64
+	spanNanos   int64
+	events      []timedEvent // optional event source override for temporal identity
 }
 
 func newStarlarkProfile(sf *stackFile, parsed *parsedProfile, event, path string) *starlarkProfile {
@@ -45,16 +48,56 @@ func newStarlarkProfile(sf *stackFile, parsed *parsedProfile, event, path string
 	}
 }
 
+func cloneProfileScope(scope *profileScope) *profileScope {
+	if scope == nil {
+		return nil
+	}
+	cloned := *scope
+	return &cloned
+}
+
+func (p *starlarkProfile) cloneChild(sf *stackFile, parsed *parsedProfile) *starlarkProfile {
+	child := newStarlarkProfile(sf, parsed, p.event, p.path)
+	child.timedParsed = p.timedParsed
+	child.scope = cloneProfileScope(p.scope)
+	return child
+}
+
+func (p *starlarkProfile) cloneScopedChild(sf *stackFile, parsed *parsedProfile, events []timedEvent, originNanos, spanNanos int64) *starlarkProfile {
+	child := newStarlarkProfile(sf, parsed, p.event, p.path)
+	child.timedParsed = p.timedParsed
+	child.scope = &profileScope{
+		originNanos: originNanos,
+		spanNanos:   spanNanos,
+		events:      events,
+	}
+	return child
+}
+
+func (p *starlarkProfile) setScope(originNanos, spanNanos int64) {
+	p.scope = &profileScope{
+		originNanos: originNanos,
+		spanNanos:   spanNanos,
+	}
+}
+
+func (p *starlarkProfile) scopeOrigin() int64 {
+	if p.scope != nil {
+		return p.scope.originNanos
+	}
+	return 0
+}
+
 func (p *starlarkProfile) scopeEnd(fallback int64) int64 {
-	if p.isScoped {
-		return p.scopedOriginNanos + p.scopedSpanNanos
+	if p.scope != nil {
+		return p.scope.originNanos + p.scope.spanNanos
 	}
 	return fallback
 }
 
 func (p *starlarkProfile) effectiveDuration() float64 {
-	if p.isScoped {
-		return float64(p.scopedSpanNanos) / 1e9
+	if p.scope != nil {
+		return float64(p.scope.spanNanos) / 1e9
 	}
 	if p.parsed != nil && p.parsed.spanNanos > 0 {
 		return float64(p.parsed.spanNanos) / 1e9
@@ -95,13 +138,13 @@ func (p *starlarkProfile) Attr(name string) (starlark.Value, error) {
 	case "duration":
 		return starlark.Float(p.effectiveDuration()), nil
 	case "start":
-		if p.isScoped {
-			return starlark.Float(float64(p.scopedOriginNanos) / 1e9), nil
+		if p.scope != nil {
+			return starlark.Float(float64(p.scope.originNanos) / 1e9), nil
 		}
 		return starlark.Float(0), nil
 	case "end":
-		if p.isScoped {
-			return starlark.Float(float64(p.scopedOriginNanos+p.scopedSpanNanos) / 1e9), nil
+		if p.scope != nil {
+			return starlark.Float(float64(p.scope.originNanos+p.scope.spanNanos) / 1e9), nil
 		}
 		return starlark.Float(p.effectiveDuration()), nil
 	case "event":
@@ -199,12 +242,7 @@ func (p *starlarkProfile) methodFilter(thread *starlark.Thread, b *starlark.Buil
 			newSf.totalSamples += st.count
 		}
 	}
-	child := newStarlarkProfile(newSf, p.parsed, p.event, p.path)
-	child.timedParsed = p.timedParsed
-	child.scopedEvents = p.scopedEvents
-	child.scopedOriginNanos = p.scopedOriginNanos
-	child.scopedSpanNanos = p.scopedSpanNanos
-	child.isScoped = p.isScoped
+	child := p.cloneChild(newSf, p.parsed)
 	return child, nil
 }
 
@@ -238,12 +276,7 @@ func (p *starlarkProfile) methodGroupBy(thread *starlark.Thread, b *starlark.Bui
 	}
 	dict := starlark.NewDict(len(groups))
 	for key, sf := range groups {
-		child := newStarlarkProfile(sf, p.parsed, p.event, p.path)
-		child.timedParsed = p.timedParsed
-		child.scopedEvents = p.scopedEvents
-		child.scopedOriginNanos = p.scopedOriginNanos
-		child.scopedSpanNanos = p.scopedSpanNanos
-		child.isScoped = p.isScoped
+		child := p.cloneChild(sf, p.parsed)
 		dict.SetKey(starlark.String(key), child)
 	}
 	return dict, nil
@@ -281,8 +314,8 @@ func (p *starlarkProfile) ensureTimedParsed() (*parsedProfile, error) {
 // temporal scope (from split) and stack-set scope (from filter/group_by/thread).
 func (p *starlarkProfile) resolveTimedEvents(timed *parsedProfile) []timedEvent {
 	source := timed.timedEvents[p.event]
-	if p.scopedEvents != nil {
-		source = p.scopedEvents
+	if p.scope != nil && p.scope.events != nil {
+		source = p.scope.events
 	}
 	return p.profileTimedEvents(source)
 }
@@ -365,7 +398,13 @@ func (p *starlarkProfile) methodTimeline(_ *starlark.Thread, b *starlark.Builtin
 		return starlark.NewList(nil), nil
 	}
 
-	bucketOrigin, bucketSpan := resolveBucketRange(-1, -1, timed.spanNanos, events)
+	fromNanos := int64(-1)
+	toNanos := int64(-1)
+	if p.scope != nil {
+		fromNanos = p.scope.originNanos
+		toNanos = p.scope.originNanos + p.scope.spanNanos
+	}
+	bucketOrigin, bucketSpan := resolveBucketRange(fromNanos, toNanos, timed.spanNanos, events)
 	numBuckets, bucketWidth, err := computeBucketWidthSafe(bucketSpan, buckets, resolution)
 	if err != nil {
 		return nil, err
@@ -437,13 +476,13 @@ func (p *starlarkProfile) methodSplit(_ *starlark.Thread, b *starlark.Builtin, a
 	splitNanos := make([]int64, n)
 	scopeEnd := p.scopeEnd(timed.spanNanos)
 	var scopeDurationNanos int64
-	if p.isScoped {
-		scopeDurationNanos = p.scopedSpanNanos
+	if p.scope != nil {
+		scopeDurationNanos = p.scope.spanNanos
 	} else {
 		scopeDurationNanos = timed.spanNanos
 	}
 	// When span metadata is missing, derive from event range.
-	if scopeDurationNanos == 0 && !p.isScoped && len(events) > 0 {
+	if scopeDurationNanos == 0 && p.scope == nil && len(events) > 0 {
 		var maxOffset int64
 		for i := range events {
 			if events[i].offsetNanos > maxOffset {
@@ -486,7 +525,7 @@ func (p *starlarkProfile) methodSplit(_ *starlark.Thread, b *starlark.Builtin, a
 	// Convert scope-relative split times to global nanos for event comparison.
 	globalSplitNanos := make([]int64, n)
 	for i, ns := range splitNanos {
-		globalSplitNanos[i] = p.scopedOriginNanos + ns
+		globalSplitNanos[i] = p.scopeOrigin() + ns
 	}
 
 	// Partition events into len(splitNanos)+1 segments.
@@ -506,12 +545,11 @@ func (p *starlarkProfile) methodSplit(_ *starlark.Thread, b *starlark.Builtin, a
 	elems := make([]starlark.Value, len(segments))
 	for i, seg := range segments {
 		sf := buildStackFileFromTimed(seg)
-		child := newStarlarkProfile(sf, timed, p.event, p.path)
-		child.scopedEvents = seg
+		child := p.cloneScopedChild(sf, timed, seg, 0, 0)
 		// Compute scoped origin and span for this segment.
 		var segStart, segEnd int64
 		if i == 0 {
-			segStart = p.scopedOriginNanos
+			segStart = p.scopeOrigin()
 		} else {
 			segStart = globalSplitNanos[i-1]
 		}
@@ -520,9 +558,8 @@ func (p *starlarkProfile) methodSplit(_ *starlark.Thread, b *starlark.Builtin, a
 		} else {
 			segEnd = scopeEnd
 		}
-		child.scopedOriginNanos = segStart
-		child.scopedSpanNanos = segEnd - segStart
-		child.isScoped = true
+		child.scope.originNanos = segStart
+		child.scope.spanNanos = segEnd - segStart
 		elems[i] = child
 	}
 	return starlark.NewList(elems), nil
@@ -569,12 +606,10 @@ func (p *starlarkProfile) methodNoIdle(_ *starlark.Thread, _ *starlark.Builtin, 
 		return nil, err
 	}
 	newSf := p.sf.filterIdle()
-	child := newStarlarkProfile(newSf, p.parsed, p.event, p.path)
-	child.timedParsed = p.timedParsed
-	child.scopedEvents = filterIdleEvents(p.scopedEvents)
-	child.scopedOriginNanos = p.scopedOriginNanos
-	child.scopedSpanNanos = p.scopedSpanNanos
-	child.isScoped = p.isScoped
+	child := p.cloneChild(newSf, p.parsed)
+	if child.scope != nil {
+		child.scope.events = filterIdleEvents(child.scope.events)
+	}
 	return child, nil
 }
 
@@ -628,12 +663,7 @@ func (b *starlarkBucket) buildProfile() *starlarkProfile {
 		return b.profile
 	}
 	sf := buildStackFileFromTimed(b.events)
-	child := newStarlarkProfile(sf, b.parent.parsed, b.parent.event, b.parent.path)
-	child.timedParsed = b.parent.timedParsed
-	child.scopedEvents = b.events
-	child.scopedOriginNanos = b.startNanos
-	child.scopedSpanNanos = b.endNanos - b.startNanos
-	child.isScoped = true
+	child := b.parent.cloneScopedChild(sf, b.parent.parsed, b.events, b.startNanos, b.endNanos-b.startNanos)
 	b.profile = child
 	return child
 }

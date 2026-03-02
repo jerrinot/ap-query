@@ -285,6 +285,118 @@ func TestOpenStartEnd(t *testing.T) {
 	}
 }
 
+func TestOpenStartEndTimelineScope(t *testing.T) {
+	out := captureOutput(func() {
+		code := runScript(fmt.Sprintf(`
+p = open(%q, start="1s", end="5s")
+print(p.start)
+print(p.end)
+buckets = p.timeline(resolution="1s")
+print(len(buckets))
+print(buckets[0].label)
+print(buckets[len(buckets)-1].label)
+`, scriptFixture("cpu.jfr")), "", nil, testTimeout)
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 5 {
+		t.Fatalf("expected 5 lines, got %d: %q", len(lines), out)
+	}
+	if strings.TrimSpace(lines[0]) != "1.0" {
+		t.Fatalf("expected profile.start 1.0, got %q", lines[0])
+	}
+	if strings.TrimSpace(lines[1]) != "5.0" {
+		t.Fatalf("expected profile.end 5.0, got %q", lines[1])
+	}
+	if strings.TrimSpace(lines[2]) != "4" {
+		t.Fatalf("expected 4 buckets, got %q", lines[2])
+	}
+	if strings.TrimSpace(lines[3]) != "1.0s-2.0s" {
+		t.Fatalf("expected first bucket label 1.0s-2.0s, got %q", lines[3])
+	}
+	if strings.TrimSpace(lines[4]) != "4.0s-5.0s" {
+		t.Fatalf("expected last bucket label 4.0s-5.0s, got %q", lines[4])
+	}
+}
+
+func TestOpenStartOnlyTimelineScope(t *testing.T) {
+	out := captureOutput(func() {
+		code := runScript(fmt.Sprintf(`
+p = open(%q, start="2s")
+print(p.start)
+buckets = p.timeline(resolution="1s")
+print(len(buckets))
+print(buckets[0].label)
+print(buckets[len(buckets)-1].label)
+`, scriptFixture("cpu.jfr")), "", nil, testTimeout)
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("expected 4 lines, got %d: %q", len(lines), out)
+	}
+	if strings.TrimSpace(lines[0]) != "2.0" {
+		t.Fatalf("expected profile.start 2.0, got %q", lines[0])
+	}
+	if strings.TrimSpace(lines[1]) != "4" {
+		t.Fatalf("expected 4 buckets, got %q", lines[1])
+	}
+	if strings.TrimSpace(lines[2]) != "2.0s-3.0s" {
+		t.Fatalf("expected first bucket label 2.0s-3.0s, got %q", lines[2])
+	}
+	if strings.TrimSpace(lines[3]) != "5.0s-6.0s" {
+		t.Fatalf("expected last bucket label 5.0s-6.0s, got %q", lines[3])
+	}
+}
+
+func TestOpenEndOnlyTimelineScope(t *testing.T) {
+	out := captureOutput(func() {
+		code := runScript(fmt.Sprintf(`
+p = open(%q, end="3s")
+print(p.end)
+buckets = p.timeline(resolution="1s")
+print(len(buckets))
+print(buckets[0].label)
+print(buckets[len(buckets)-1].label)
+`, scriptFixture("cpu.jfr")), "", nil, testTimeout)
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d", code)
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("expected 4 lines, got %d: %q", len(lines), out)
+	}
+	if strings.TrimSpace(lines[0]) != "3.0" {
+		t.Fatalf("expected profile.end 3.0, got %q", lines[0])
+	}
+	if strings.TrimSpace(lines[1]) != "3" {
+		t.Fatalf("expected 3 buckets, got %q", lines[1])
+	}
+	if strings.TrimSpace(lines[2]) != "0.0s-1.0s" {
+		t.Fatalf("expected first bucket label 0.0s-1.0s, got %q", lines[2])
+	}
+	if strings.TrimSpace(lines[3]) != "2.0s-3.0s" {
+		t.Fatalf("expected last bucket label 2.0s-3.0s, got %q", lines[3])
+	}
+}
+
+func TestOpenStartAfterEnd(t *testing.T) {
+	stderr := captureStream(&os.Stderr, func() {
+		code := runScript(fmt.Sprintf(`p = open(%q, start="5s", end="1s")`, scriptFixture("cpu.jfr")), "", nil, testTimeout)
+		if code == 0 {
+			t.Fatalf("expected error for start > end")
+		}
+	})
+	if !strings.Contains(stderr, "end must be >= start") {
+		t.Fatalf("expected 'end must be >= start' in stderr, got %q", stderr)
+	}
+}
+
 func TestOpenNotFound(t *testing.T) {
 	stderr := captureStream(&os.Stderr, func() {
 		code := runScript(`p = open("nonexistent.jfr")`, "", nil, testTimeout)
@@ -2083,13 +2195,12 @@ for b in buckets:
 	if strings.TrimSpace(lines[0]) != "3" {
 		t.Fatalf("expected 3 samples in parts[1], got %q", lines[0])
 	}
-	// 2 buckets span the full recording [0,10s): [0,5s) and [5s,10s).
-	// All 3 late events (6s,7s,8s) must land in bucket 1 (the late half).
-	// The bug would put them in bucket 0 (timestamps remapped to 1s,2s,3s).
+	// 2 buckets over scoped [5s,10s): [5s,7.5s) and [7.5s,10s).
+	// Events at 6s and 7s land in bucket 0; 8s lands in bucket 1.
 	b0 := strings.TrimSpace(lines[1])
 	b1 := strings.TrimSpace(lines[2])
-	if b0 != "0" || b1 != "3" {
-		t.Fatalf("expected buckets [0, 3], got [%s, %s]", b0, b1)
+	if b0 != "2" || b1 != "1" {
+		t.Fatalf("expected buckets [2, 1], got [%s, %s]", b0, b1)
 	}
 }
 
@@ -2920,8 +3031,8 @@ print(ni.samples)
 
 func TestProfileNoIdleScopedEvents(t *testing.T) {
 	// Build a timed profile with both idle and non-idle events, then split()
-	// to produce a child with scopedEvents != nil. no_idle() on that child
-	// must filter both the stackFile and scopedEvents so that a subsequent
+	// to produce a child with a scoped event source override. no_idle() on that child
+	// must filter both the stackFile and scoped event source so that a subsequent
 	// timeline() excludes idle events from bucket counts.
 	sf := makeStackFile([]stack{
 		{frames: []string{"A", "B"}, lines: []uint32{0, 0}, count: 4, thread: "t1"},
@@ -2947,7 +3058,7 @@ func TestProfileNoIdleScopedEvents(t *testing.T) {
 # split at 1s: part0=[0,1s) has 2 non-idle + 1 idle, part1=[1s,+) has 2 non-idle + 2 idle
 parts = p.split([1.0])
 part1 = parts[1]
-# part1 has scopedEvents != nil (from split)
+# part1 has scoped event source override (from split)
 ni = part1.no_idle()
 print(ni.samples)
 buckets = ni.timeline(buckets=1)
@@ -4098,7 +4209,7 @@ print(parts[1].samples)
 }
 
 func TestSplitZeroWidthScopedRejects(t *testing.T) {
-	// A zero-width scoped profile (scopedSpanNanos == 0) must reject positive split times.
+	// A zero-width scoped profile must reject positive split times.
 	sf := makeStackFile(nil)
 	timed := &parsedProfile{
 		eventCounts:   map[string]int{"cpu": 0},
@@ -4108,9 +4219,7 @@ func TestSplitZeroWidthScopedRejects(t *testing.T) {
 	}
 	p := newStarlarkProfile(sf, timed, "cpu", "test.jfr")
 	p.timedParsed = timed
-	p.isScoped = true
-	p.scopedOriginNanos = 5e9
-	p.scopedSpanNanos = 0
+	p.setScope(5e9, 0)
 
 	stderr := captureStream(&os.Stderr, func() {
 		code := runScript(`p.split([1.0])`, "", nil, testTimeout, withPredeclared("p", p))
